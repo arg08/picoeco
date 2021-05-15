@@ -1,0 +1,246 @@
+;
+; Copyright (c) 2021 Gordon Design Ltd
+;
+; SPDX-License-Identifier: BSD-3-Clause
+;
+
+;-----------------------------------------------------------------------
+; Design notes
+; Using PIO unit.  There are two PIO units per chip, each with
+; 4 state machines.
+
+; Only 32 instructions in each unit, shared between the 4 state machines.
+; Each state machine has input and output FIFOs, though these
+; can be paired to give a double-length FIFO in one direction.
+; Each state machine has separate GPIO pin mappings for each of
+; the conditional jump, the IN/MOV instructions, the OUT/MOV instructions,
+; the SET instruction, and side-setting attached to other instructions.
+; WAIT instructions can either use the pin mapping from IN, or
+; else use absolute pin numbers (ie. pin mapping bound in the code).
+; 
+; Sensible to use side-set for line driver enable.
+; 
+; It is possible to modify code on the fly (ie. from the ARM: the
+; PIO code itself can't be self-modifying), but this would preclude
+; running more than one state machine with the same code.
+; It is also possible to force execution of individual instructions
+; by writing them from the ARM (without ever lying in the program RAM):
+; this is commonly done for initialisation - particularly PINDIRS -
+; without wasting instruction memory for that, though it can also
+; be done during execution to change control flow.
+; 
+; Receive program can't read directly from RxD with the IN
+; instruction, as there's no way to test a bit once it's
+; in the shift register, and no way to shift it back out
+; if it turns out to be padding.  Instead, need conditional
+; jump on the RxD value.
+;
+; Data is received LSB first, so ISR needs to shift right; if
+; we use autopush (and have the FIFO as bytes) this means the byte will be 
+; misaligned in the 32-bit words of the FIFO.  Using the FIFO as
+; words would be too complex (given variable length packets), so
+; we probably need to live with the unaligned data (ARM or DMA can
+; read the FIFO with byte ops at a +3 address) unless we have
+; code space to spare for manual shift and push. 
+; We can load a 32-bit value into the FIFO explicitly and
+; push it, so we do this for Flag to give a marker; unfortunately
+; this means we need to do word-wide reads from the FIFO
+; and shift the data down in the normal case.
+
+; This code would fit easily as separate Tx and Rx state machines,
+; but that would either mean using both PIO units (it would be nice
+; to keep one for non-Econet functions, and also synchronising
+; the two PIO units is not explicitly supported), or else using
+; the CPU to replace the code in the PIO unit when flipping between
+; Tx and Rx: this is feasible, but needs interrupt latency down
+; to the order of one bit time where it's otherwise only a byte
+; time or better.
+
+
+;----------------------------------------------------------------------------
+
+; Econet HDLC and line turnaround logic
+;
+; Tx code switches to generating flags if the output FIFO is empty: used
+; both to get the trailing flag after a packet and to get the leading
+; flag (by switching to Tx mode and only putting the first byte in the
+; FIFO after it has started doing the first flag).
+; Normal entry is at rxentrypoint, which will Rx continuously,
+; putting a special high-bit-set word in the RX FIFO when a flag is Rx
+; and otherwise receiving all bytes; the transition to idle will write
+; a byte of 0xff to the FIFO before the idle is detected and stops
+; (this spurious FF will then be followed by another flag marker so
+; just looks like a runt packet that could happen any time).
+; To Tx after Rx, the state machine is forced directly to txflag:
+; and the flag starts immediately on the next network clock
+; (this will have been triggered by software having read the flag
+; out of the Rx FIFO, so the other station has had a chance to turn off
+; its transmitter).  The tx packet data can be inserted in the FIFO
+; immediately (giving 1 flag), or else the state machine can be left
+; flag-filling until data is ready.
+; To Tx a new packet (ie. when line is idle), the JMP instruction at
+; poke_for_tx is replaced by an INT instruction: when the INT occurs,
+; the state machine has started transmitting a flag, so the tx data
+; can immediately be loaded into the FIFO (from the int handler).
+; That int handler can also put back the JMP instruction.
+; At the end of the tx data, the FIFO should simply be allowed to
+; run dry and the state machine will tx a flag.  In order to get only
+; one flag, the JMP instruction at poke_for_eof: should be replaced
+; by one going to rxentrypoint: so that it loops back into Rx rather
+; than another flag.  This instruction should be replaced at the start
+; of any Tx depending on whether flag fill or 1-flag-and-stop behaviour
+; is reqd.
+;
+; Rx code uses X as a down-counter for '1' bits to detect
+; stuffing/flags/idle.  Y is used temporarily to match values of X.
+; Tx code uses Y for the next bit value to output and X as a counter
+; for either stuffing bits or the number of bits in a flag.
+
+
+; Assumes 1 bit output for TxD (PINCTRL_OUT_BASE=pin/PINCTRL_OUT_COUNT=1)
+; Assumes 1 bit of side-set for TxEn with optional side-setting
+; (PINCTRL_SIDESET_BASE=pin/PINCTRL_SIDESETCNT=2/EXECCTRL_SIDE_EN=1)
+; SET outputs (PINCTRL_SET_BASE) not used: all output via MOV.
+; Assumes 1 bit of input (PINCTRL_IN_BASE) for CLK
+; (previous version had RxD here too, but now just read RxD with JMP PIN)
+; JMP_PIN must be set for RxD (EXECCTRL_JMP_PIN)
+; Byte-wide operation, so PULL_THRESH and PUSH_THRESH both =8
+; LSB first: OUT_SHIFTDIR/IN_SHIFTDIR both =1
+; AUTOPULL/AUTOPUSH both =1
+
+.program econet_hdlc
+.side_set 1 opt		; One bit of side-set: the Tx enable pin.
+					; Optional so we only specify it when we want to change it
+					; - this is important because TxE must be set with
+					; precise timing and the code path to that point is
+					; often shared with Rx code or tx-next-bit code
+					; where TxE could be on or off.
+
+.origin 0
+; This is placed at 0000 to allow saving an instruction by having
+; a piece of code that wants to jump here run up to the last address
+; in the memory and wrap round.
+txmainloop:
+  wait 1 pin 0 [7]    ; Wait for clock hi, delay in case of glitchy edge
+  wait 0 pin 0  		; Wait for clock lo, immediately output data
+  mov pins, y side 1 ; output next bit from y and enable Tx if 1st time
+  jmp x--, txnostuffing	; jump if stuffing not yet reqd
+  set y, 0			; Next output bit will be a zero to add the stuffing
+txreset_x:
+  set x, 6			; Reset the counter that's counting '1' bits
+    				; Note that in both cases that we get here, the next bit
+    				; to be output is a zero (either stuffing or user)
+    				; and X will be decremented for that bit too, so 6 not 5.
+  jmp txmainloop
+
+
+rx0bit:				; Here to shift in a normal '0' bit (Jump here with Y=10)
+  set x,15			; Reset the idle countdown and fall through
+
+rx1bit:				; Here to shift in a '1' bit when not yet idle.
+					; Jump here with Y=11
+  in y, 1			; By cunning contrivance, low bit of Y on arrival here
+					; matches the data bit just sampled.
+					; (previous version of this code sampled the input GPIO
+					; again, risking it having changed meantime).
+rxmainloop:
+.wrap_target
+  wait 0 pin 0 [7]    ; Wait for clock low, delay in case of glitchy edge
+  set y,9				; Set Y ready for testing (code save optimisation)
+  wait 1 pin 0 side 0	; Wait for clock hi, immediately sample data
+						; Side set in case coming from Tx code: might want
+						; to move it down 1 instruction (NB. takes effect
+						; before any wait cycles)
+  jmp pin got_a_1
+
+; Here with a 0 bit received
+  jmp x!=y rx_notflag	; If X==9, this is a flag
+  mov isr,~null			; Load all-bit-set value as special marker in Rx FIFO
+						; This discards any accumulated part-byte and ensures
+						; byte-alignment for the following data.
+
+  push noblock			; This push isn't strictly necessary, as the extra bits
+						; would get set on the word containing the following
+						; byte and so act as the marker, but we need to
+						; do _something_ here as the next byte might be
+						; a long time coming and action is needed immediately
+						; on receiving the end of frame flag.
+						; Alternative would be to set an interrupt, but
+						; that would require very low interrupt latency
+						; to ensure no ambiguity as to where in the FIFO
+						; it belongs.  This way generates an entire 0xffffffff
+						; word in the FIFO, with all data bytes having
+						; remaining bits clear (NB. byte value actually
+						; appears in high bits of the word because we are
+						; shifting right).
+
+
+  jmp rxentrypoint		; Jump to get X reset, then loop.
+
+
+; Here with a 0 bit that's not a flag - check for stuffing
+rx_notflag:
+  set y,10
+  jmp x!=y rx0bit	; Not stuffing or flag - assume a normal 0 bit. NB Y=10
+   ; Here if this was a 0 after 5 1's - don't shift it in, but
+   ; drop through to reset the 1's counter and continue
+					
+PUBLIC rxentrypoint:
+  set x,15		; Reset the idle countdown
+  jmp rxmainloop
+
+got_a_1:		; Arrive here with Y=9
+  jmp x-- rx1bit
+; Here if idle - received 15 1s
+  set x,0			; Make us keep dropping back in here without filling
+					; the fifo with 0xff during a spell of idle.
+; 		Natural version of this code would just be:
+; irq 0				; Flag the idle state so software can detect 'not listening'
+; jmp rxmainloop	; and go on processing Rx until something happens
+
+;		However, when doing Rx, the Tx FIFO is always empty
+;		so we can safely put this after the JMP !OSRE which will just
+;		fall through.  This lets us share the IRQ instruction between
+;		Rx and Tx codepaths.  The _rel flag is used so that the two
+;		machines set different IRQ numbers.
+;		The Rx IRQ is set repeatedly when the line is idle.
+;		ARM can reset the IRQ flag and enable the interrupt, getting
+;		interrupted 1 econet clock later if the line is still idle, or else
+;		next time it becomes idle.
+
+; Falling through with Y=9, X=0, CLK has just gone high
+
+; Jump here from txmainloop to pick the next bit into Y
+; entered with Y=last bit txed, X=0, clock just gone low.
+txnostuffing:
+; NB. autopull is enabled, so OSR should never be empty unless the
+; FIFO has run dry at end of packet (or start of packet if doing
+; flag fill while waiting for something).
+  jmp !OSRE, txnextbit
+
+ irq 0 rel		; Signal the transmitting a flag/idle condition
+
+.wrap		; Wrap here during Rx operation (goes to rxmainloop)
+			; Take away the wrap configuration and let it drop through
+			; to start Tx automatically once the line goes idle.
+			; Put the wrap back to resume Rx once the current Tx byte
+			; has gone out (which if you do it from the tx run dry interrupt
+			; means it will happen once the trailing flag has gone out)
+
+; Output a flag.  Fall through to here,
+; or forcibly entered here after Rx to start Tx with a flag.
+PUBLIC txflag:
+  set y,0			; The first bit of the flag, to be output at txmainloop
+  mov osr,~null	; Load the output register with a byte of 0xff
+  out null, 2		; discard two bits of it, leaving six
+  set x,7			; set the stuffing counter 1 more than usual, so
+  jmp txmainloop	; we get a zero stuffed just after the last of those
+					; six 1s
+
+txnextbit:
+  out y, 1		; Else get the next user data bit into y
+  jmp !y, txreset_x ; If this is a zero bit, reset the stuffing counter
+;  jmp txmainloop	; This instruction not needed as PC wraps round
+
+;Total 32 instructions!!!!  Just fits!!
+
