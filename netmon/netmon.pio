@@ -1,0 +1,90 @@
+;
+; Copyright (c) 2021 Gordon Design Ltd
+;
+; SPDX-License-Identifier: BSD-3-Clause
+;
+
+;-----------------------------------------------------------------------
+
+; This is a cut-down version of the standard econet_hdlc, with the
+; transmit functions removed and a different treatment of line idle.
+.program netmon_hdlc
+
+.origin 0
+
+rx0bit:				; Here to shift in a normal '0' bit (Jump here with Y=10)
+  set x,15			; Reset the idle countdown and fall through
+
+rx1bit:				; Here to shift in a '1' bit when not yet idle.
+					; Jump here with Y=11
+  in y, 1			; By cunning contrivance, low bit of Y on arrival here
+					; matches the data bit just sampled.
+					; (previous version of this code sampled the input GPIO
+					; again, risking it having changed meantime).
+rxmainloop:
+.wrap_target
+  wait 0 pin 0 [7]    ; Wait for clock low, delay in case of glitchy edge
+  set y,9				; Set Y ready for testing (code save optimisation)
+  wait 1 pin 0 side 0	; Wait for clock hi, immediately sample data
+						; Side set in case coming from Tx code: might want
+						; to move it down 1 instruction (NB. takes effect
+						; before any wait cycles)
+  jmp pin got_a_1
+
+; Here with a 0 bit received
+  jmp x!=y rx_notflag	; If X==9, this is a flag
+  mov isr,~null			; Load all-bit-set value as special marker in Rx FIFO
+						; This discards any accumulated part-byte and ensures
+						; byte-alignment for the following data.
+
+  push noblock			; This push isn't strictly necessary, as the extra bits
+						; would get set on the word containing the following
+						; byte and so act as the marker, but we need to
+						; do _something_ here as the next byte might be
+						; a long time coming and action is needed immediately
+						; on receiving the end of frame flag.
+						; Alternative would be to set an interrupt, but
+						; that would require very low interrupt latency
+						; to ensure no ambiguity as to where in the FIFO
+						; it belongs.  This way generates an entire 0xffffffff
+						; word in the FIFO, with all data bytes having
+						; remaining bits clear (NB. byte value actually
+						; appears in high bits of the word because we are
+						; shifting right).
+
+
+  jmp rxentrypoint		; Jump to get X reset, then loop.
+
+
+; Here with a 0 bit that's not a flag - check for stuffing
+rx_notflag:
+  set y,10
+  jmp x!=y rx0bit	; Not stuffing or flag - assume a normal 0 bit. NB Y=10
+   ; Here if this was a 0 after 5 1's - don't shift it in, but
+   ; drop through to reset the 1's counter and continue
+					
+PUBLIC rxentrypoint:
+  set x,15		; Reset the idle countdown
+  jmp rxmainloop
+
+got_a_1:		; Arrive here with Y=9
+  jmp x-- rx1bit
+; Here if idle - received 15 1s
+  set x,0			; Make us keep dropping back in here without filling
+					; the fifo with 0xff during a spell of idle.
+  mov isr,~y			; Load all-bit-set value as special marker in Rx FIFO
+  push noblock			; This push isn't strictly necessary, as the extra bits
+
+; wait for zero bit
+wait_zero:
+  wait 0 pin 0 [7]    ; Wait for clock low, delay in case of glitchy edge
+  wait 1 pin 0 side 0	; Wait for clock hi, immediately sample data
+						; Side set in case coming from Tx code: might want
+						; to move it down 1 instruction (NB. takes effect
+						; before any wait cycles)
+  jmp pin wait_zero
+  jmp rx_notflag
+  set x,15				; Restart idle countdown
+
+; back to main loop
+.wrap
