@@ -121,6 +121,11 @@ static void execute_cmd(const char *cmd)
 		printf("Terminator is %s\n",
 			gpio_get(ECONET_PIN_TERM_EN) ? "on" : "off");
 	}
+	else if (!strncmp(cmd, "peek", len))
+	{
+		uint32_t addr = strtoul(p, NULL, 16);
+		printf("Peek %08x = %08x\n", addr, *(uint32_t*)addr);
+	}
 	else if (!strncmp(cmd, "reset", 5))
 	{
 		printf("Resetting board.\n");
@@ -131,6 +136,7 @@ static void execute_cmd(const char *cmd)
 		printf("Commands:\n"
 			" clock [<speed> | off | on ]\n"
 			" terminator [ off | on ]\n"
+			" peek <hexaddr>\n"
 			" reset\n"
 			);
 	}

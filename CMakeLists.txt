@@ -11,7 +11,10 @@ set(CMAKE_CXX_STANDARD 17)
 pico_sdk_init()
 
 
-add_executable(ecotest ecotest.c econet_ll.c)
+add_executable(ecotest
+	ecotest.c
+	crc16.c
+	econet_ll.c)
 
 # Get the UF2 file built
 pico_add_extra_outputs(ecotest)
@@ -19,6 +22,7 @@ pico_add_extra_outputs(ecotest)
 pico_generate_pio_header(ecotest ${CMAKE_CURRENT_LIST_DIR}/econet.pio)
 
 pico_enable_stdio_usb(ecotest 1)
+pico_enable_stdio_uart(ecotest 0)
 
 target_link_libraries(ecotest
         pico_stdlib
