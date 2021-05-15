@@ -125,9 +125,9 @@ txmainloop:
   wait 0 pin 0  		; Wait for clock lo, immediately output data
   mov pins, y side 1 ; output next bit from y and enable Tx if 1st time
   jmp x--, txnostuffing	; jump if stuffing not yet reqd
-  set y, 0		; Next output bit will be a zero to add the stuffing
+  set y, 0			; Next output bit will be a zero to add the stuffing
 txreset_x:
-  set x, 6		; Reset the counter that's counting '1' bits
+  set x, 6			; Reset the counter that's counting '1' bits
     				; Note that in both cases that we get here, the next bit
     				; to be output is a zero (either stuffing or user)
     				; and X will be decremented for that bit too, so 6 not 5.
@@ -135,7 +135,7 @@ txreset_x:
 
 
 rx0bit:				; Here to shift in a normal '0' bit (Jump here with Y=10)
-  set x,15		; Reset the idle countdown and fall through
+  set x,15			; Reset the idle countdown and fall through
 
 rx1bit:				; Here to shift in a '1' bit when not yet idle.
 					; Jump here with Y=11
@@ -153,11 +153,29 @@ rxmainloop:
 						; before any wait cycles)
   jmp pin got_a_1
 
-   ; Here with a 0 bit received
-  jmp x!=y rx_notflag		; If X==9, this is a flag
-  mov isr,~null		; Load high-bit-set value as special marker in Rx FIFO
-  push noblock		; This forces byte alignment for the following data.
-  jmp rxentrypoint	; Jump to get X reset, then loop.
+; Here with a 0 bit received
+  jmp x!=y rx_notflag	; If X==9, this is a flag
+  mov isr,~null			; Load all-bit-set value as special marker in Rx FIFO
+						; This discards any accumulated part-byte and ensures
+						; byte-alignment for the following data.
+
+  push noblock			; This push isn't strictly necessary, as the extra bits
+						; would get set on the word containing the following
+						; byte and so act as the marker, but we need to
+						; do _something_ here as the next byte might be
+						; a long time coming and action is needed immediately
+						; on receiving the end of frame flag.
+						; Alternative would be to set an interrupt, but
+						; that would require very low interrupt latency
+						; to ensure no ambiguity as to where in the FIFO
+						; it belongs.  This way generates an entire 0xffffffff
+						; word in the FIFO, with all data bytes having
+						; remaining bits clear (NB. byte value actually
+						; appears in high bits of the word because we are
+						; shifting right).
+
+
+  jmp rxentrypoint		; Jump to get X reset, then loop.
 
 
 ; Here with a 0 bit that's not a flag - check for stuffing
@@ -180,7 +198,7 @@ got_a_1:		; Arrive here with Y=9
 ; irq 0				; Flag the idle state so software can detect 'not listening'
 ; jmp rxmainloop	; and go on processing Rx until something happens
 
-;		However, on the Rx machine the Tx FIFO is always empty
+;		However, when doing Rx, the Tx FIFO is always empty
 ;		so we can safely put this after the JMP !OSRE which will just
 ;		fall through.  This lets us share the IRQ instruction between
 ;		Rx and Tx codepaths.  The _rel flag is used so that the two
@@ -202,7 +220,12 @@ txnostuffing:
 
  irq 0 rel		; Signal the transmitting a flag/idle condition
 
-.wrap		; Wrap here on Rx machine always (goes to rxmainloop)
+.wrap		; Wrap here during Rx operation (goes to rxmainloop)
+			; Take away the wrap configuration and let it drop through
+			; to start Tx automatically once the line goes idle.
+			; Put the wrap back to resume Rx once the current Tx byte
+			; has gone out (which if you do it from the tx run dry interrupt
+			; means it will happen once the trailing flag has gone out)
 
 ; Output a flag.  Fall through to here,
 ; or forcibly entered here after Rx to start Tx with a flag.
