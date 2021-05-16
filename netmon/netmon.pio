@@ -33,24 +33,13 @@ rxmainloop:
 
 ; Here with a 0 bit received
   jmp x!=y rx_notflag	; If X==9, this is a flag
-  mov isr,~null			; Load all-bit-set value as special marker in Rx FIFO
-						; This discards any accumulated part-byte and ensures
-						; byte-alignment for the following data.
 
-  push noblock			; This push isn't strictly necessary, as the extra bits
-						; would get set on the word containing the following
-						; byte and so act as the marker, but we need to
-						; do _something_ here as the next byte might be
-						; a long time coming and action is needed immediately
-						; on receiving the end of frame flag.
-						; Alternative would be to set an interrupt, but
-						; that would require very low interrupt latency
-						; to ensure no ambiguity as to where in the FIFO
-						; it belongs.  This way generates an entire 0xffffffff
-						; word in the FIFO, with all data bytes having
-						; remaining bits clear (NB. byte value actually
-						; appears in high bits of the word because we are
-						; shifting right).
+; Here with flag detected, Y=9, maybe junk in ISR (max 7 bits)
+; Need to clean out ISR to achieve byte alignment, and send a marker
+; to show we've had a flag.
+; This writes 0x00000009 to the FIFO as a marker, leaving ISR clear
+; (NB. normal data in hi byte of word because LSB first).
+  in y,32
 
 
   jmp rxentrypoint		; Jump to get X reset, then loop.

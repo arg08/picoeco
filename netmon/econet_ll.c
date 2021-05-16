@@ -144,7 +144,7 @@ void econet_fg_poll(void)
 			printf("i\n");
 			plen = 0;
 		}
-		else if (w == 0xffffffff)
+		else if (w == 0x00000009)
 		{
 			// Standard marker for flags
 			putchar('*');
