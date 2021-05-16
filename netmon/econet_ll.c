@@ -36,20 +36,11 @@ static void pio_irq0_handler(void)
 	while (pio0->ints0 & PIO_IRQ0_INTS_SM0_RXNEMPTY_BITS)
 	{
 		*p++ = pio0->rxf[0];
-		if (p > (big_buf + sizeof(big_buf))) p = big_buf;
+		if (p >= (big_buf + sizeof(big_buf))) p = big_buf;
 	}
 	inptr = p;
 }
 
-/*
-	Purpose:	Exclusive handler for IRQ1  on this PIO unit
-	Returns:	Nothing
-	Notes:		
-*/
-
-static void pio_irq1_handler(void)
-{
-}
 
 // -----------------------------------------------------------------
 
@@ -100,8 +91,7 @@ void econet_ll_init(const EcoHWConfig *hw)
 	// Hook the interrupt handlers
 	irq_set_exclusive_handler((hw->pio == pio0) ? PIO0_IRQ_0 : PIO1_IRQ_0,
 		pio_irq0_handler);
-	irq_set_exclusive_handler((hw->pio == pio0) ? PIO0_IRQ_1 : PIO1_IRQ_1,
-		pio_irq1_handler);
+
 	// We leave the interrupts permanently enabled in the NVIC,
 	// but mask individual sources from time to time.
 	irq_set_enabled((hw->pio == pio0) ? PIO0_IRQ_0 : PIO1_IRQ_0, true);
@@ -109,7 +99,7 @@ void econet_ll_init(const EcoHWConfig *hw)
 
 	// Enable the FIFO Rx interrupt
 	// These enable bits are in order of sm number
-	hw->pio->inte0 |= (PIO_IRQ0_INTE_SM0_RXNEMPTY_BITS << hw->sm);
+	hw_set_bits(&hw->pio->inte0, (PIO_IRQ0_INTE_SM0_RXNEMPTY_BITS << hw->sm));
 
 	// Initialise the CRC table - doesn't mind being called more than once.
 	init_crc16_table();

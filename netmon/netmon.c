@@ -126,9 +126,9 @@ static void execute_cmd(const char *cmd)
 		uint32_t addr = strtoul(p, NULL, 16);
 		printf("Peek %08x = %08x\n", addr, *(uint32_t*)addr);
 	}
-	else if (!strncmp(cmd, "reset", 5))
+	else if (!strncmp(cmd, "bootrom", 7))
 	{
-		printf("Resetting board.\n");
+		printf("Resetting to bootrom.\n");
 		reset_usb_boot(0, 0);
 	}
 	else
@@ -137,7 +137,7 @@ static void execute_cmd(const char *cmd)
 			" clock [<speed> | off | on ]\n"
 			" terminator [ off | on ]\n"
 			" peek <hexaddr>\n"
-			" reset\n"
+			" bootrom\n"
 			);
 	}
 }
