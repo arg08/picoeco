@@ -126,7 +126,7 @@ void econet_fg_poll(void)
 	while (inptr != outptr)
 	{
 		uint32_t w = *outptr++;
-		if (outptr > (big_buf + sizeof(big_buf))) outptr = big_buf;
+		if (outptr >= (big_buf + sizeof(big_buf))) outptr = big_buf;
 		if (w == 0xfffffff6)
 		{
 			// The special marker for idle, only generated in the
