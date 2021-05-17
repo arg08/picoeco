@@ -14,6 +14,7 @@ pico_sdk_init()
 add_executable(ecotest
 	ecotest.c
 	crc16.c
+	timers.c
 	econet_ll.c)
 
 # Get the UF2 file built
