@@ -100,7 +100,9 @@
 ;
 ; Actual enable/disable of the Tx line driver is achieved by side-set
 ; in the Tx and Rx main loops: this gets the Tx turned on when new
-; data is driven at the falling edge of the clock,;
+; data is driven at the falling edge of the clock, and turned off again
+; on return to the Rx main loop.
+;
 ; Worst-case IRQ latency is required to be less than 1 byte-time,
 ; the critical case being at the end of transmitting scout/ack frames,
 ; where exactly one flag must be transmitted to avoid collision with
@@ -148,13 +150,13 @@
 txmainloop:
   wait 0 pin 0  	; Wait for clock lo, immediately output data
   mov pins, y side 1 [7]; output next bit from y and enable driver if 1st time
-  wait 1 pin 0 [7]    ; Wait for clock hi, delay in case of glitchy edge
+  wait 1 pin 0		; Wait for clock hi, delay first in case of glitchy edge
   jmp x--, txnostuffing	; jump if stuffing not yet reqd
-  set y, 0			; Next output bit will be a zero to add the stuffing
+  			; Next output bit will be a zero to add the stuffing
 txreset_x:
   set x, 5			; Reset the counter that's counting '1' bits
-    				; Note that in both cases that we get here, the next bit
-    				; to be output is a zero (either stuffing or user)
+tx_zero_bit:		; Note that in both cases that we get here, the next bit
+  set y, 0			; to be output is a zero (either stuffing or user)
     				; and X will be decremented for that bit too, so 5 not 4.
   jmp txmainloop
 
@@ -258,8 +260,7 @@ txnostuffing:
 ; or for repeated flags (flag fill) while waiting for external events.
 ; Forcibly entered here after idle IRQ to start Tx of a new packet
 PUBLIC txflag:
-  set y,0			; The first bit of the flag, to be output at txmainloop
-  mov osr,~null	; Load the output register with a byte of 0xff
+  mov osr,~null		; Load the output register with a byte of 0xff
   out null, 2		; discard two bits of it, leaving six
   set x,6			; set the stuffing counter 1 more than usual, so
 					; we get a zero stuffed just after the last of those
@@ -274,11 +275,15 @@ PUBLIC txflag:
 					; distinct makrer value - 0x00000007, compared to
 					; 0x00000009 for flags and 0xNN000000 for normal data.
 
-  jmp txmainloop
+  jmp tx_zero_bit	; Get the first '0' bit of the flag transmitted,
+					; will then loop to txnextbit for the 6  1's in
+					; the OSR, and finally the stuffing counter will insert
+					; the ending zero.
 
 txnextbit:
   out y, 1		; Else get the next user data bit into y
   jmp !y, txreset_x ; If this is a zero bit, reset the stuffing counter
+  nop				; XXXXX Spare instruction for future use!!
 ;  jmp txmainloop	; This instruction not needed as PC wraps round
 
 ;Total 32 instructions!!!!  Just fits!!
