@@ -49,7 +49,6 @@ static bool poll_1hz(repeating_timer_t *rt)
 		<< ((ws->txen_pin % 8) * 4);
 	if (iobank0_hw->intr[ws->txen_pin / 8] & mask)
 	{
-		printf("seen an edge %08x\n", iobank0_hw->intr[1]);
 		// interrupt status register is write-1-to-clear
 		// Can't clear level bit, but it doesn't do any harm.
 		iobank0_hw->intr[ws->txen_pin / 8] = mask;

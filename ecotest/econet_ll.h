@@ -17,4 +17,6 @@ typedef struct
 } EcoHWConfig;
 
 
-extern void econet_ll_init(const EcoHWConfig *hw);
+extern void econet_ll_init(const EcoHWConfig *hw, bool (*isforus_cb)(uint32_t));
+
+extern bool watcher_init(const EcoHWConfig *hw);
