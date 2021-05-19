@@ -5,7 +5,8 @@
 ;
 
 ;-----------------------------------------------------------------------
-; Design notes
+; General Design notes
+;
 ; Using PIO unit.  There are two PIO units per chip, each with
 ; 4 state machines.
 
@@ -58,7 +59,8 @@
 
 
 ;----------------------------------------------------------------------------
-
+; Detailed notes on the current design
+;
 ; Econet HDLC and line turnaround logic
 ;
 ; Normal entry is at rxentrypoint, which will Rx continuously,
@@ -82,6 +84,23 @@
 ; For line turnaround (ie. to Tx a frame immediately having received
 ; a scout or Ack, where the responding flag must go out before the
 ; line becomes idle), the code is arranged so that the loop back
+
+
+; Forced entry at tx_zero_bit for ARM to force us from Rx into Tx
+; on a line turnaround - it will transmit a zero bit (possibly only
+; half a bit depending on timing), then go via txnostuffing to txflag
+; and transmit a properly-aligned flag (assuming Tx FIFO empty).
+; Reason for this is that the opening flag must not occur hard up
+; against the trailing flag of the frame just received - BBC won't
+; see our flag if so.  The value of the intermediate bit doesn't matter,
+; nor does the non-bit-aligned timing of tx enable (BBC does that itself
+; when the roles are reversed), it's just to ensure that bit of delay.
+; If we are very quick in responding to the Rx flag, then we put out
+; a whole bit of zero, if we are late then there may be half a bit
+; of undriven line (or even multiple whole bits if we are slow),
+; but either way the flag is correctly formed and in a place where
+; the BBC can see it.
+
 ; to the main Rx code after a flag is received is made using the
 ; .wrap mechanism.  When a line turnaround is desired, the .wrap
 ; is disabled and control falls through from the flag Rx into the
@@ -120,6 +139,13 @@
 ; stuffing/flags/idle.  Y is used temporarily to match values of X.
 ; Tx code uses Y for the next bit value to output and X as a counter
 ; for either stuffing bits or the number of bits in a flag.
+; Note that the X downcounter values are used for various secondary
+; purposes - the marker values in the Rx FIFO and for the code saving
+; trick where Y 'happens' to have the right value for IN Y,1 for rx0bit/rx1bit
+; This makes it difficult to change the starting value (to give a longer
+; idle timeout), but not impossible: the marker values would have to
+; be changed in ARM-side code, and the rx0bit/rx1bit can be fixed
+; if necessary by doing the tests for flags/stuffing in the opposite order.
 
 
 ; Assumes 1 bit output for TxD (PINCTRL_OUT_BASE=pin/PINCTRL_OUT_COUNT=1)
@@ -150,48 +176,50 @@
 txmainloop:
   wait 0 pin 0  	; Wait for clock lo, immediately output data
   mov pins, y side 1 [7]; output next bit from y and enable driver if 1st time
-  wait 1 pin 0		; Wait for clock hi, delay first in case of glitchy edge
+					; Delay before waiting clk hi again in case of glitchy edge
+  wait 1 pin 0		; Wait for clock hi
   jmp x--, txnostuffing	; jump if stuffing not yet reqd
   			; Next output bit will be a zero to add the stuffing
 txreset_x:
   set x, 5			; Reset the counter that's counting '1' bits
-tx_zero_bit:		; Note that in both cases that we get here, the next bit
-  set y, 0			; to be output is a zero (either stuffing or user)
+PUBLIC tx_zero_bit:	; Fall through for stuffing, enter here from txflag
+					; or forced by ARM on line turnaround.
+					; Note that in all 3 cases that we get here, the
+  set y, 0			; next bit to be output is a zero (either stuffing or user)
     				; and X will be decremented for that bit too, so 5 not 4.
   jmp txmainloop
 
+
+; Jump here to pick the next bit to transmit into Y
+;  - entered with Y=last bit txed, X=0, clock just gone high.
+;txnostuffing:
+; NB. autopull is enabled, so OSR should never be empty unless the
+; FIFO has run dry at end of packet, or at start of packet to cause
+; opening flag/flag fill. Flags themselves get loaded into the OSR,
+; so if we don't take the jump we are at a byte/flag boundary.
+
+
 ; -------------------------------------------------------
 
-; Here with a '1' bit received.
-; Currently detects only the 15 1's idle condition - should also detect
-; anything more than 6 adjacent 1's as an abort, though an abort followed
-; by data (as opposed to going on to idle) is an extremely rare occurrence,
-; either just inter-packet junk which will still get ignored or
-; perhaps caused by corruption of a 0 bit in the middle of a packet,
-; which should get caught by the CRC anyhow.
-got_a_1:			; Arrive here with Y=9
-  jmp x-- rx1bit	; Jump if not idle -just a normal '1' bit
 
-; Here if idle - received 15 1s
-  set x,0			; Make us keep dropping back in here without filling
-					; the fifo with 0xff during a spell of idle.
-  irq 0 rel			; Signal the idle state.  We will continually set the
-					; IRQ flag while the line remains idle, so software
-					; will normally have the interrupt masked, then
-					; clear the flag and unmask the interrupt when it
-					; is waiting for the line to go idle.
-  jmp rxmainloop
-
-; Here with a 0 bit that's not a flag - check for stuffing
+; Here on Rx with a 0 bit that's not a flag - check for stuffing
 rx_notflag:
   set y,10
   jmp x!=y rx0bit	; Not stuffing or flag - assume a normal 0 bit. NB Y=10
    ; Here if this was a 0 after 5 1's - don't shift it in, but
-   ; reset the 1's counter and continue
+   ; fall through to reset the 1's counter and continue
 
-PUBLIC rxentrypoint:
-.wrap_target
-  set x,15		; Reset the idle countdown
+; A little bit of Tx code wedged into the middle of Rx.
+; During Rx operations the OSR will always be empty so this does nothing.
+; During normal Tx, the wrap is programmed so that it jumps to txflag
+; if the branch is not taken - however after the trailing flag of a frame
+; the wrap can be removed so that it drops back into Rx.
+txnostuffing:
+  jmp !OSRE, txnextbit
+PUBLIC tx_wrap_source:	; Equivalent to JMP txflag when wrap enabled
+
+PUBLIC rxentrypoint:	; Main entry point at start of time.
+  set x,15			; Reset the idle countdown
   jmp rxmainloop
 
 
@@ -200,11 +228,15 @@ rx0bit:				; Here to shift in a normal '0' bit (Jump here with Y=10)
 
 rx1bit:				; Here to shift in a '1' bit when not yet idle.
 					; Jump here with Y=9
+  jmp !x, abort_idle	; If about to go idle, jump to send a marker.
+
   in y, 1			; By cunning contrivance, low bit of Y on arrival here
 					; matches the data bit just sampled.
 					; (previous version of this code sampled the input GPIO
 					; again, risking it having changed meantime).
+
 rxmainloop:
+.wrap_target
   wait 0 pin 0 [7]    ; Wait for clock low, delay in case of glitchy edge
   set y,9				; Set Y ready for testing (code save optimisation)
   wait 1 pin 0 side 0	; Wait for clock hi, immediately sample data
@@ -228,38 +260,60 @@ rxmainloop:
 
   in y,32
 
-;  jmp rxentrypoint		; Jump to get X reset, then loop.
-						; This jmp replaced by use of .wrap.
+  jmp rxentrypoint		; Jump to get X reset, then loop.
 
 
-; For Rx operation, we want .wrap here, then to cause an automatic line
-; turnaround after the trailing flag is received, we we can just take away
-; the wrap and have it fall through into transmitting a flag.
-; However, during Rx operation the Tx FIFO is always empty so the default
-; wrap can be put after the JMP !OSRE, which where we want the wrap to be
-; in order to  terminate Tx after the final flag.
-; So we have only two settings of the wrap - disabled to turn the line
-; around (and also during Tx), or in default location (.wrap marker)
-; for inital Rx and after starting the final flag of Tx.
+; Come here after decrementing X and it's now zero, Y=9
+; Send a marker in the Rx FIFO to show the line is about to go idle.
+; Done in this contrived way (do the X--, then test X again) so that
+; we only send one marker when the line goes idle rather than clogging
+; up the Rx FIFO with repeated markers if it remains idle.
+; Ideally we'd use IN Y,32 giving a marker of 9, but that's already used for
+; flags. So we do IN Y,31 which gives Y*2 plus the MSB of the existing ISR
+; - usually '1' here, but we might possibly have had an autopush on the
+; previous bit in which case '0'.
+; So the marker value is either 18 or 19 (0x12/0x13).
+abort_idle:
+  in y,31			
 
+; Would jmp rxmainloop here, but save an instruction by dropping through,
+; back to where we were a moment ago.  This is harmless, but means the
+; counter decrements twice at the final step  - result is that starting
+; from 15 declares idle after 15 1s (normally an X-- loop makes n+1
+; iterations starting from n).
 
-; Falling through with Y=9, X=9, CLK has just gone high
+; Here with a '1' bit received.
+; Currently detects only the 15 1's idle condition - should also detect
+; anything more than 6 adjacent 1's as an abort, though an abort followed
+; by data (as opposed to going on to idle) is an extremely rare occurrence,
+; either just inter-packet junk which will still get ignored or
+; perhaps caused by corruption of a 0 bit in the middle of a packet,
+; which should get caught by the CRC anyhow.
+got_a_1:			; Arrive here with Y=9
+  jmp x-- rx1bit	; Jump if not idle -just a normal '1' bit
 
-; Jump here from txmainloop to pick the next bit into Y
-;  - entered with Y=last bit txed, X=0, clock just gone low.
-txnostuffing:
-; NB. autopull is enabled, so OSR should never be empty unless the
-; FIFO has run dry at end of packet (or start of packet if doing
-; flag fill while waiting for something).
-  jmp !OSRE, txnextbit
-
+; Here if idle - received 15 1s.  X=0xffffffff, Y=9.
+  set x,0			; Make us keep dropping back in here without filling
+					; the fifo with 0xff during a spell of idle.
 .wrap
 
+; For normal Rx operation we leave the .wrap setting as default.
+; However, if we wish to initiate a new Tx (only allowed when the line is
+; idle) we can simply disable the wrap mechanism and it falls through
+; from here when the line is idle and starts transmitting flags
+; (assuming Tx FIFO is empty - the Tx Flag code posts a marker to the
+; Rx FIFO that can be used to trigger loading of the Tx data.
+
+; Re-programming the wrap is also used to manage the exit back from Tx
+; to Rx cleanly after the trailing flag.
+
+; Falling through with Y=9, X=0, CLK has just gone high
+
 ; Output a flag.
-; Fall through to here (wrapping disabled) for line turnaround
-; or for repeated flags (flag fill) while waiting for external events.
-; Forcibly entered here after idle IRQ to start Tx of a new packet
-PUBLIC txflag:
+; wrap to here from Tx code to transmit flag fill and opening/closing flags
+; (in that case Y=last bit txed, X=0, CLK just gone high
+PUBLIC tx_wrap_target:
+txflag:
   mov osr,~null		; Load the output register with a byte of 0xff
   out null, 2		; discard two bits of it, leaving six
   set x,6			; set the stuffing counter 1 more than usual, so
@@ -283,7 +337,6 @@ PUBLIC txflag:
 txnextbit:
   out y, 1		; Else get the next user data bit into y
   jmp !y, txreset_x ; If this is a zero bit, reset the stuffing counter
-  nop				; XXXXX Spare instruction for future use!!
 ;  jmp txmainloop	; This instruction not needed as PC wraps round
 
 ;Total 32 instructions!!!!  Just fits!!

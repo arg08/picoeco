@@ -109,10 +109,6 @@ static void __not_in_flash_func(load_addrs_to_tx_fifo)(PIO pio,
 
 	ws->crc = crc;
 
-	// Remove the PIO program wrap that returns to Rx when Tx FIFO empty
-	// (0,31) is effectively no wrap at all, just the implicit bottom to top.
-	pio_sm_set_wrap(pio, 0 /*XXX*/, 0, 31);
-
 	// Enable Tx interrupts.
 	hw_set_bits(&pio->inte0, (PIO_IRQ0_INTE_SM0_TXNFULL_BITS << 0));
 }
@@ -132,28 +128,11 @@ static void __not_in_flash_func(pio_irq0_handler)(void)
 	PIO pio = pio0;
 
 	// RxFIFO interrupt is always enabled.
-	// Idle line interrupt is enabled in all states except ST_IDLE,
-	// and is an error situation for all except ST_SKIPIDLE.
-	// In the (unusual) case where both are active, we don't know the
-	// relative timing of the idle and the words in the FIFO:
-	// the FIFO contents could be the tail end of a frame after which
-	// the line went idle, or it could be the line was idle (briefly)
-	// and the start of a new frame got loaded into the FIFO before we
-	// serviced it.  We therefore process the FIFO first, and if it
-	// contains a flag we can inspect the idle IRQ bit  and take
-	// appropriate action, clearing the idle IRQ if we now appear to
-	// be in a new packet.  If there's no flag, then the data in the
-	// FIFO is all junk anyhow (and processing it won't have caused
-	// any significant action).  Then after processing the FIFO, if
-	// the idle IRQ is still active then this must now be a persistent
-	// idle state and can be handled like the case of the idle IRQ
-	// occurring on its own.
-	// Note that there's no race hazard in clearing the idle IRQ:
-	// the PIO program will set it repeatedly for so long as the
-	// idle state lasts.
-	// TxFIFO interrupts are only enabled during the transmission of
-	// the body of a frame, and there's no timing relationship with Rx
-	// to be concerned about (idle can't occur during Tx).
+	// Values read from the FIFO are one of:
+	//  - Data byte value in bits 31:24 (bits 23:0 all zeros)
+	//  - Marker value for flag received (9)
+	//  - Marker value for flag starting transmit (6)
+	//  - Marker value for abort/line about to be idle (18 or 19).
 
 	while (pio->ints0 & PIO_IRQ0_INTS_SM0_RXNEMPTY_BITS)
 	{
@@ -213,14 +192,12 @@ printf("|abort crc %04x count %u\n", ws->crc, ws->rx_count);
 						ws->tx_ptr = machine_peek_data;
 						ws->rx_count = 0;
 						ws->rx_limit = sizeof(machine_peek_data);
+				pio_sm_set_wrap(pio, 0 /*XXX*/,
+					econet_hdlc_offset_tx_wrap_target,
+					econet_hdlc_offset_tx_wrap_source);
+				pio_sm_exec(pio, 0 /*XXX instance no*/,
+					pio_encode_jmp(econet_hdlc_offset_tx_zero_bit));
 ws->flag_cnt = 0;
-#if 0
-	// XXXX This only works because the host is slower than the PIO:
-	// XXXX Could in theory have got the flag Rx but not got past the
-	// XXXX test for Tx FIFO empty that triggers the flag.
-	// XXXX However, it's only 2 ticks and interrupt latency can't be that low.
-						load_addrs_to_tx_fifo(pio, ws);
-#endif
 					}
 				}
 			}
@@ -229,20 +206,6 @@ ws->flag_cnt = 0;
 			// XXXXXXXX Flag rx in other states?
 			}
 
-			if (0)
-			{
-// XXXX This is tx code, not turnaround code.
-				// Do line turnaround by forcing the PIO into Tx flag code
-				pio_sm_exec(pio, 0 /*XXX instance no*/,
-					pio_encode_jmp(econet_hdlc_offset_txflag));
-
-				// Clear PIO wrap so that it carries on sending flags
-				// until we load data into the Tx FIFO.
-				// (0,31) is effectively no wrap at all, just the implicit
-				// bottom to top.
-				pio_sm_set_wrap(pio, 0 /*XXX*/, 0, 31);
-
-			}
 		}
 		else if (w == 6)
 		{
@@ -258,18 +221,21 @@ ws->flag_cnt = 0;
 				// of the frame, but don't need to do anything as the
 				// Tx FIFO is already primed.
 				// Once the packet has gone however it's time to shut down.
+#if 1
 				if (ws->flag_cnt == 0)
 				{
-					// Do nothing to give BBC a bit more time
-				//	load_addrs_to_tx_fifo(pio, ws);
+					// Do nothing - BBC needs a gap before the flag,
+					// which we deliver by sending two flags.
 				}
 				else if (ws->flag_cnt == 1) load_addrs_to_tx_fifo(pio, ws);
+#else
+				if (ws->flag_cnt == 0) load_addrs_to_tx_fifo(pio, ws);
+#endif
 				else
 				{
 					ws->state = ST_SKIPIDLE;
 					pio_sm_set_wrap(pio, 0 /*XXX*/,
 						econet_hdlc_wrap_target, econet_hdlc_wrap);
-printf("ws->crc %04x\n", ws->crc);
 				}
 				ws->flag_cnt++;
 			}
@@ -281,6 +247,15 @@ printf("ws->crc %04x\n", ws->crc);
 				//XXX
 
 			}
+		}
+		else if (w & 0xff)	// all other marker values, should just be 18/19
+		{
+			// Line gone idle.
+			putchar('i');
+			// Restore default wrap.
+			pio_sm_set_wrap(pio, 0 /*XXX*/,
+				econet_hdlc_wrap_target, econet_hdlc_wrap);
+			ws->state = ST_IDLE;
 		}
 		else
 		{
@@ -350,8 +325,6 @@ putchar('D');
 						// Decided not to accept this packet.
 						// Wrap should already be in the state for
 						// continued Rx
-						// .pio source - this just carries on receiving
-						// after a flag.
 						pio_sm_set_wrap(pio, 0 /*XXX*/,
 							econet_hdlc_wrap_target, econet_hdlc_wrap);
 						// And we don't care about any of those bytes either
@@ -364,18 +337,9 @@ putchar('D');
 	}
 
 
-	// Idle IRQ still active after FIFO processing - line is really idle.
-	if (pio->ints0 & PIO_IRQ0_INTS_SM0_BITS)
-	{
-		putchar('i');
-		// Disable the interrupt again until we get more data
-		hw_clear_bits(&pio->inte0, (PIO_IRQ0_INTE_SM0_BITS));
-		pio_sm_set_wrap(pio, 0 /*XXX*/,
-			econet_hdlc_wrap_target, econet_hdlc_wrap);
-		ws->state = ST_IDLE;
-	}
-
-	// Handle Tx not empty
+	// Handle Tx not empty interrupt
+	// This is only enabled after the leading flag has gone out
+	// and the 4 address bytes loaded in the Tx FIFO.
 	while (pio->ints0 & PIO_IRQ0_INTS_SM0_TXNFULL_BITS)
 	{
 //printf("tx");
