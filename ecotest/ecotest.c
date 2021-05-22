@@ -13,14 +13,10 @@
 
 #include "econet_ll.h"
 
-// Temp - station ID hard-wired rather than configured.
-#define OUR_STNID	8
-
 // Hardware configuration to pass to the low level drivers
 static const EcoHWConfig eco_hw =
 {
-	.pio = pio0,	// Arbitrarily choose PIO unit 0, state machine 0.
-	.sm = 0,
+	.pio_no = 0,	// Arbitrarily choose PIO unit 0
 	.clk_pin = 9,	// Econet clock input pin number
 	.rxd_pin = 11,	// Econet RxD input pin number
 	.txd_pin = 12,	// Econet TxD output pin number
@@ -154,25 +150,13 @@ static void execute_cmd(const char *cmd)
 	}
 }
 
-/*
-	Purpose:	Callback function from lower layers to check address
-	Returns:	True if packet addressed to us, else false
-	Notes:		Supposed to return false for broadcasts.
-				Called from interrupt handler.
-*/
-static bool is_our_address(uint32_t addrs)
-{
-	// Parameter is LSB dest stn, byte1 dest net, byte2 src stn, MSB src net.
-	// We only care about the dest, expect net to be 0 and stn to match our stn.
-	return ((addrs & 0xffff) == OUR_STNID);
-}
 
 int main()
 {
 	char *cmdptr;
 	stdio_init_all();
 
-	econet_ll_init(&eco_hw, is_our_address);
+	econet_hl_init(&eco_hw);
 	watcher_init(&eco_hw);
 
 	// The remaining pins aren't part of the econet interface, so we
