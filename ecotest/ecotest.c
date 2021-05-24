@@ -12,6 +12,7 @@
 #include "hardware/structs/pwm.h"
 #include "hardware/pwm.h"
 #include "hardware/uart.h"
+#include "hardware/watchdog.h"
 
 #include "econet_ll.h"
 
@@ -99,7 +100,7 @@ static void execute_cmd(const char *cmd)
 				uint32_t period = clock_get_hz(clk_sys) / rate;
 				pwm_config cfg = pwm_get_default_config();
 				// Set up the clock and turn it on
-				printf("Setting clock to %u Hz (%u)\n", rate, period);
+				printf("Setting clock to %u Hz (%u)\n", rate, (unsigned)period);
 				pwm_config_set_wrap(&cfg, period);
 
 				pwm_init(pwm_gpio_to_slice_num(ECONET_PIN_CLKOUT), &cfg, true);
@@ -125,7 +126,7 @@ static void execute_cmd(const char *cmd)
 	else if (!strncmp(cmd, "peek", len))
 	{
 		uint32_t addr = strtoul(p, NULL, 16);
-		printf("Peek %08x = %08x\n", addr, *(uint32_t*)addr);
+		printf("Peek %08lx = %08lx\n", addr, *(uint32_t*)addr);
 	}
 	else if (!strncmp(cmd, "assert", len))
 	{

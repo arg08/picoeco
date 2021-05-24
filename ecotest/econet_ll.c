@@ -189,9 +189,6 @@ ST_RXTURN: Need to reset PIO wrap to Rx mode.
 
 
 
-static const uint8_t machine_peek_data[] =
-{ 0xf8, 0xff, 0x01, 0x00 };
-
 // Workspace for one econet interface
 typedef struct
 {
@@ -466,7 +463,7 @@ static inline void __not_in_flash_func(event_rf)(PIO pio, EcoWkSpace *ws)
 #if SANITY_CHECKS
 		if (ws->frame_no == 3)
 		{
-			printf("Bad frame no in RXTURN\n", ws->frame_no);
+			printf("Bad frame no %u in RXTURN\n", ws->frame_no);
 			reset_interface(pio, ws);
 		}
 		else
@@ -1042,9 +1039,9 @@ void econet_ll_cancel_tx(void *inst)
 		ws->pend_tx = NULL;
 		ws->pend_len = 0;
 	}
-	else if ( ((ws->state == ST_TX) || (ws->state == ST_RXTURN)
+	else if ( ( ((ws->state == ST_TX) || (ws->state == ST_RXTURN))
 				&& ((ws->frame_no & 1) == 0))
-			|| ((ws->state == ST_RX) || (ws->state == ST_TXWAIT)
+			|| ( ((ws->state == ST_RX) || (ws->state == ST_TXWAIT))
 				&& (ws->frame_no & 1))
 			)
 	{

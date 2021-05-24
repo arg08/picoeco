@@ -126,4 +126,5 @@ bool watcher_init(const EcoHWConfig *hw)
 	// Enable system watchdog with 2 sec timeout
 	watchdog_enable(2000, 1);
 
+	return true;
 }
