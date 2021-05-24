@@ -14,6 +14,9 @@
 
 static void *ih;		// The instance handle for the low-layer/hardware
 
+static const uint8_t machine_peek_data[] =
+{ 0xf8, 0xff, 0x01, 0x00 };
+
 
 static uint8_t tx_buf[100];
 static uint32_t tx_len = 0;
@@ -32,7 +35,10 @@ static uint32_t tx_len = 0;
 static bool __not_in_flash_func(cb_addr_is_us)(uint32_t addrs)
 {
 	// Accept our station and all broadcasts
-	if ((addrs & 0xffff) == OUR_STNID) return true;
+	if ((addrs & 0xffff) == OUR_STNID)
+	{
+		return true;
+	}
 	return (addrs & 0xff) == 0xff;	// Broadcast
 }
 
@@ -61,6 +67,29 @@ static bool __not_in_flash_func(cb_addr_is_us)(uint32_t addrs)
 */
 static void __not_in_flash_func(cb_rx_scout)(const uint8_t *data, unsigned len, uint32_t pkt_id)
 {
+	if (data[0] == 0xff)
+	{
+		// Broadcast
+		return;
+	}
+	if (data[5])
+	{
+		// Non-immediata
+		econet_ll_cancel_rx(ih, pkt_id);
+		return;
+	}
+	else
+	{
+		// Immediate ops
+		if (data[4] == 0x88)
+		{
+			econet_ll_rx_2way(ih, machine_peek_data, sizeof(machine_peek_data));
+		}
+		else
+		{
+			econet_ll_cancel_rx(ih, pkt_id);
+		}
+	}
 }
 
 /*
@@ -106,6 +135,7 @@ static void __not_in_flash_func(cb_rx_end)(void)
 static void __not_in_flash_func(cb_rx_cancel)(unsigned err)
 {
 	// This demo version doesn't have any critical state so nothing to do
+	printf("<rxc>");
 }
 
 
@@ -147,6 +177,7 @@ static uint8_t* __not_in_flash_func(cb_tx_more_data)(unsigned *len)
 
 static void __not_in_flash_func(cb_tx_done)(unsigned err)
 {
+	printf("<txd>");
 }
 
 static const EcoLLCallbacks our_callbacks =

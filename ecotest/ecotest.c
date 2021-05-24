@@ -6,10 +6,12 @@
 #include <stdlib.h>
 #include "pico/stdlib.h"
 #include "pico/bootrom.h"
+//#include <stdio_uart.h>
 #include "hardware/pio.h"
 #include "hardware/clocks.h"
 #include "hardware/structs/pwm.h"
 #include "hardware/pwm.h"
+#include "hardware/uart.h"
 
 #include "econet_ll.h"
 
@@ -154,7 +156,10 @@ static void execute_cmd(const char *cmd)
 int main()
 {
 	char *cmdptr;
-	stdio_init_all();
+//	stdio_init_all();
+	stdio_uart_init_full(uart0, 2000000, 0, 1);
+	printf("Ecotest\n");
+	if (watchdog_caused_reboot()) printf("Watchdog reboot\n");
 
 	econet_hl_init(&eco_hw);
 	watcher_init(&eco_hw);

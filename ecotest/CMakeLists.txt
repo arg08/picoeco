@@ -23,8 +23,9 @@ pico_add_extra_outputs(ecotest)
 
 pico_generate_pio_header(ecotest ${CMAKE_CURRENT_LIST_DIR}/econet.pio)
 
-pico_enable_stdio_usb(ecotest 1)
-pico_enable_stdio_uart(ecotest 0)
+set(PICO_UART_DEFAULT_BAUD 2000000)
+pico_enable_stdio_usb(ecotest 0)
+pico_enable_stdio_uart(ecotest 1)
 
 target_link_libraries(ecotest
         pico_stdlib

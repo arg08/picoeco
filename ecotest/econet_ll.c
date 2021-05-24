@@ -7,6 +7,7 @@
 #include "pico/bootrom.h"
 #include "hardware/pio.h"
 #include "hardware/irq.h"
+#include "hardware/sync.h"
 
 // Enables sanity checking for conditions that should not be possible.
 #define	SANITY_CHECKS	1
@@ -195,6 +196,7 @@ static const uint8_t machine_peek_data[] =
 typedef struct
 {
 	EcoLLCallbacks callb;	// Callbacks to higher layer code
+	PIO pio;			// Pointer to PIO instance in use.
 	IFState state;
 	uint8_t frame_no;	// Runs 0..3 for scout/ack/data/ack
 	uint16_t crc;		// Running copy of CRC for both Tx and Rx
@@ -249,6 +251,8 @@ static void reset_interface(PIO pio, EcoWkSpace *ws)
 	pio_sm_exec(pio, SM_NO, pio_encode_jmp(econet_hdlc_offset_rxentrypoint));
 	pio_sm_set_wrap(pio, SM_NO, econet_hdlc_wrap_target, econet_hdlc_wrap);
 	ws->state = ST_SKIPIDLE;
+	// Disable Tx interrupts
+	hw_clear_bits(&pio->inte0, (PIO_IRQ0_INTE_SM0_TXNFULL_BITS << SM_NO));
     pio_sm_set_enabled(pio, SM_NO, true);
 }
 
@@ -278,22 +282,46 @@ static void __not_in_flash_func(load_addrs_to_tx_fifo)(PIO pio,
 	uint16_t crc = 0xffff;
 
 	b = (addr >> 16) & 0xff;
-	pio->txf[0] = b;
+	pio->txf[SM_NO] = b;
 	crc = crc16_add_byte(crc, b);
 	b = (addr >> 24) & 0xff;
-	pio->txf[0] = b;
+	pio->txf[SM_NO] = b;
 	crc = crc16_add_byte(crc, b);
 	b = addr & 0xff;
-	pio->txf[0] = b;
+	pio->txf[SM_NO] = b;
 	crc = crc16_add_byte(crc, b);
 	b = (addr >> 8) & 0xff;
-	pio->txf[0] = b;
+	pio->txf[SM_NO] = b;
 	crc = crc16_add_byte(crc, b);
 
 	ws->crc = crc;
 
 	// Enable Tx interrupts.
 	hw_set_bits(&pio->inte0, (PIO_IRQ0_INTE_SM0_TXNFULL_BITS << SM_NO));
+}
+
+/*
+	Purpose:	Consider exiting TXWAIT state
+	Returns:	Nothing, state maybe updated
+	Notes:		Called both from the TF event and from higher layer
+				(maybe foreground, maybe resulting from callback)
+				supplying the rx buffer.  Made a separate function
+				so the same criteria are applied in all cases.
+				Called either from an interrupt handler or with
+				interrupts disabled.
+*/
+
+static inline void consider_txwait_exit(PIO pio, EcoWkSpace *ws)
+{
+	if ((ws->rx_count > 1) && ws->bleft)
+	{
+//putchar('X');
+		ws->frame_no++;
+		ws->state = ST_TX;
+		// This sets up CRC, loads the 4 address bytes, and enables Tx ints.
+		load_addrs_to_tx_fifo(pio, ws);
+	}
+//else putchar('x');
 }
 
 /*
@@ -310,6 +338,7 @@ static void __not_in_flash_func(load_addrs_to_tx_fifo)(PIO pio,
 
 static void __not_in_flash_func(signal_rx_fail)( EcoWkSpace *ws, unsigned err)
 {
+printf("F%u/%u/%u\n", ws->state, ws->frame_no, err);
 	if ((ws->frame_no == 1) || (ws->frame_no == 3))
 		ws->callb.tx_done(err);
 	else if (ws->frame_no == 2)
@@ -325,6 +354,7 @@ static void __not_in_flash_func(signal_rx_fail)( EcoWkSpace *ws, unsigned err)
 
 static inline void __not_in_flash_func(event_rf)(PIO pio, EcoWkSpace *ws)
 {
+//putchar('*');
 	if (ws->state == ST_IDLE)
 	{
 		// Opening flag of scout packet.
@@ -356,19 +386,19 @@ static inline void __not_in_flash_func(event_rf)(PIO pio, EcoWkSpace *ws)
 		else if (ws->rx_count < 6)
 		{
 			// Bad frame.  Skip until line goes idle.
-			ws->state = ST_SKIPIDLE;
 			// Report failure to higher layer if reqd
 			signal_rx_fail(ws, ERR_RUNT);
+			ws->state = ST_SKIPIDLE;
 		}
 		else
 		{
 			// Potentially good frame - check the CRC.
 			if (ws->crc != VALID_CRC16_FINAL)
 			{
-				ws->state = ST_SKIPIDLE;
 				// signal_rx_fail() works out if it's an overall Tx or Rx
 				// that failed and calls the appropriate callback.
 				signal_rx_fail(ws, ERR_CRC);
+				ws->state = ST_SKIPIDLE;
 			}
 			else
 			{
@@ -382,6 +412,7 @@ static inline void __not_in_flash_func(event_rf)(PIO pio, EcoWkSpace *ws)
 				}
 				else
 				{
+//putchar('t');
 					// Turn the line around.
 					// Note that we do this state transition first, as the
 					// higher layer might invoke econet_ll_ack_rx() etc.
@@ -435,7 +466,7 @@ static inline void __not_in_flash_func(event_rf)(PIO pio, EcoWkSpace *ws)
 #if SANITY_CHECKS
 		if (ws->frame_no == 3)
 		{
-			printf("Bad frame no in TXTURN\n", ws->frame_no);
+			printf("Bad frame no in RXTURN\n", ws->frame_no);
 			reset_interface(pio, ws);
 		}
 		else
@@ -460,6 +491,7 @@ static inline void __not_in_flash_func(event_rf)(PIO pio, EcoWkSpace *ws)
 
 static inline void __not_in_flash_func(event_tf)(PIO pio, EcoWkSpace *ws)
 {
+//putchar('^');
 	if (ws->state == ST_IDLE)
 	{
 		uint32_t w;
@@ -467,36 +499,37 @@ static inline void __not_in_flash_func(event_tf)(PIO pio, EcoWkSpace *ws)
 		// The leading flag has already gone, so load up the address
 		// bytes into the FIFO and start transmitting the data already
 		// provided.
-		ws->pkt_id++;
-		// Cast because pend_tx is const but bufptr shared between Rx/Tx
-		// +4 because we handle the address bytes separately.
-		ws->bufptr = (uint8_t*)ws->pend_tx + 4;
-		if (ws->pend_len & 0x80000000)
+		if (!ws->pend_tx)
 		{
-			ws->pend_len &= 0x7fffffff;
-			ws->frame_no = 2;
-		}
-		else ws->frame_no = 0;
-		ws->bleft = ws->pend_len - 4;
-		// Saved addresses have to match Rx order for later comparisons,
-		// so need to swap low and high halfwords to swap source/dest
-		w = *(const uint32_t *)ws->pend_tx;
-		ws->current_addrs = (w << 16) | (w >> 16);
-		ws->state = ST_TX;
-		// This sets up the CRC, loads the 4 address bytes, and enables Tx ints.
-		load_addrs_to_tx_fifo(pio, ws);
-
-		// Prevent transmitting this more than once
-		ws->pend_tx = 0;
-		ws->pend_len = 0;
-
-#if	SANITY_CHECKS
-		if (!ws->bufptr)
-		{
-			printf("Tx with no buffer!\n");
+			// Started but there's nothing to Tx!  Maybe just cancelled
+			// at the wrong moment.
 			reset_interface(pio, ws);
 		}
-#endif
+		else
+		{
+			ws->pkt_id++;
+			// Cast because pend_tx is const but bufptr shared between Rx/Tx
+			// +4 because we handle the address bytes separately.
+			ws->bufptr = (uint8_t*)ws->pend_tx + 4;
+			if (ws->pend_len & 0x80000000)
+			{
+				ws->pend_len &= 0x7fffffff;
+				ws->frame_no = 2;
+			}
+			else ws->frame_no = 0;
+			ws->bleft = ws->pend_len - 4;
+			// Saved addresses have to match Rx order for later comparisons,
+			// so need to swap low and high halfwords to swap source/dest
+			w = *(const uint32_t *)ws->pend_tx;
+			ws->current_addrs = (w << 16) | (w >> 16);
+			ws->state = ST_TX;
+			// This sets up the CRC, loads  4 addr bytes, and enables Tx ints.
+			load_addrs_to_tx_fifo(pio, ws);
+
+			// Prevent transmitting this more than once
+			ws->pend_tx = NULL;
+			ws->pend_len = 0;
+		}
 	}
 	else if (ws->state == ST_TXWAIT)
 	{
@@ -507,13 +540,7 @@ static inline void __not_in_flash_func(event_tf)(PIO pio, EcoWkSpace *ws)
 		// NB. the buffer pointer itself may be NULL if we are just
 		// transmitting an ACK with no data, but in that case the
 		// bleft will be 2 for the CRC.
-		if ((ws->rx_count > 1) && ws->bleft)
-		{
-			ws->frame_no++;
-			ws->state = ST_TX;
-			// This sets up CRC, loads the 4 address bytes, and enables Tx ints.
-			load_addrs_to_tx_fifo(pio, ws);
-		}
+		consider_txwait_exit(pio, ws);
 		// Else keep on waiting for those conditions to be satisfied.
 	}
 	else if (ws->state == ST_TX)
@@ -524,7 +551,9 @@ static inline void __not_in_flash_func(event_tf)(PIO pio, EcoWkSpace *ws)
 		pio_sm_set_wrap(pio, SM_NO, econet_hdlc_wrap_target, econet_hdlc_wrap);
 		// Other end should then send us a flag (RF).
 		// Sit in ST_RXTURN waiting for that to happen.
-		ws->state = ST_RXTURN;
+		// Unless this was the last flag, in which case just wait for idle.
+		if (ws->frame_no != 3) ws->state = ST_RXTURN;
+		else ws->state = ST_SKIPIDLE;
 	}
 	// TF event in ST_RXTURN means we were too late changing the PIO wrap;
 	// could treat as an error, but more useful to ignore and hope the
@@ -533,7 +562,7 @@ static inline void __not_in_flash_func(event_tf)(PIO pio, EcoWkSpace *ws)
 	// occur if we were late, but SKIPIDLE is where we would go to treat it
 	// as an error so nothing to do.
 #if SANITY_CHECKS
-	if ((ws->state == ST_RX) || (ws->state == ST_SKIPIDLE))
+	else if ((ws->state == ST_RX) || (ws->state == ST_SKIPIDLE))
 	{
 		printf("TF event in state %u\n", ws->state);
 	}
@@ -553,10 +582,7 @@ void __not_in_flash_func(event_d)(PIO pio, EcoWkSpace *ws, uint32_t w)
 	// Only ST_RX wants data, all others either intentionally ignoring it
 	// or should be impossible to get it.
 
-// XXXX Problem here: the higher layer buffer gets the address bytes.
-// For normal RxCB behaviour, we don't want that, but we do want to
-// keep the address with the scout.
-	if (ws->state = ST_RX)
+	if (ws->state == ST_RX)
 	{
 		// Check for overflowing buffer.  For normal Rx (frame 2), we can
 		// ask the higher layer for another one, likewise immediate op
@@ -598,7 +624,7 @@ void __not_in_flash_func(event_d)(PIO pio, EcoWkSpace *ws, uint32_t w)
 				if (ws->frame_no == 0)
 				{
 					// Ask the higher layer whether to accept
-					// and remember them to check against later frames
+					// and remember addresses to check against later frames
 					ws->current_addrs = addrs;
 					accept = ws->callb.addr_is_us(addrs);
 				}
@@ -612,7 +638,7 @@ void __not_in_flash_func(event_d)(PIO pio, EcoWkSpace *ws, uint32_t w)
 				}
 				// For data frame, once we've got the addresses,
 				// switch to the supplied buffer for the actual data.
-				if (ws->frame_no == 1)
+				else if (ws->frame_no == 1)
 				{
 					ws->bufptr = ws->hl_rx_buf;	// Value provided earlier
 					ws->bleft = ws->hl_rx_len;
@@ -637,15 +663,15 @@ static inline void __not_in_flash_func(event_i)(PIO pio, EcoWkSpace *ws)
 {
 	// An idle event has to leave us in ST_IDLE, but varies in the
 	// amount of cleaning up needed.
-putchar('i');
+//putchar('i');
 
-	if (ws->state = ST_RX)
+	if (ws->state == ST_RX)
 	{
 		// We've aborted while receiving a frame (could be overall Tx or Rx)
 		// so may need to notify the higher layer
 		signal_rx_fail(ws, ERR_IDLE);
 	}
-	else if (ws->state = ST_TXWAIT)
+	else if (ws->state == ST_TXWAIT)
 	{
 		// Idle in TXWAIT means it must have happened before we got to
 		// TXWAIT so we were very late in starting our Tx and the
@@ -707,12 +733,14 @@ static inline void __not_in_flash_func(tx_fifo_int)(PIO pio, EcoWkSpace *ws)
 			// there's any more, and if not switch to doing the CRC.
 			ws->bufptr = ws->callb.tx_more_data(&ws->bleft);
 			if (!ws->bufptr) ws->bleft = 2;		// 2 bytes of CRC
+//putchar('d');
 		}
 	}
 	else if (ws->bleft == 2)
 	{
 		b = ~ws->crc;		// Low byte of CRC
 		ws->bleft--;
+//putchar('c');
 	}
 	else
 	{
@@ -720,9 +748,12 @@ static inline void __not_in_flash_func(tx_fifo_int)(PIO pio, EcoWkSpace *ws)
 		// This is the last byte so disable interrupts.
 		hw_clear_bits(&pio->inte0,
 			(PIO_IRQ0_INTE_SM0_TXNFULL_BITS << SM_NO));
+//putchar('C');
 	}
 	// Put the byte in the FIFO.
+//putchar('D');
 	pio->txf[SM_NO] = b;
+//printf("-%02x-", b);
 }
 
 /*
@@ -764,6 +795,8 @@ static void __not_in_flash_func(pio_irq0_handler)(void)
 	while (pio->ints0 & (PIO_IRQ0_INTS_SM0_TXNFULL_BITS << SM_NO))
 	{
 		tx_fifo_int(pio, ws);
+		__dmb();	// Ensure write to the Tx FIFO have taken effect
+					// before we sample the status again.
 	}
 }
 
@@ -783,6 +816,26 @@ static void __not_in_flash_func(pio_irq0_handler)(void)
 void econet_ll_rx_start(void *inst, uint8_t *buf, unsigned len)
 {
 	EcoWkSpace *ws = (EcoWkSpace*)inst;
+	uint32_t intstat = save_and_disable_interrupts();
+
+	// Should be waiting to tx the ACK to the scout
+	if (ws->state == ST_TXWAIT)
+	{
+		// Stash the supplied buffer for later use
+		ws->hl_rx_buf = buf;
+		ws->hl_rx_len = len;
+		// Right now, get the ACK transmitted - just a CRC, no data
+		ws->bufptr = NULL;
+		ws->bleft = 2;
+		// The following not strictly necessary - the buffer would be 'found'
+		// on the next TF event, but that guarantees to waste 8 bit-times
+		// (since the poll isn't done until just after the flag has gone)
+		consider_txwait_exit(ws->pio, ws);
+	}
+#if SANITY_CHECKS
+	else printf("rx_start in state %u\n", ws->state);
+#endif
+	restore_interrupts(intstat);
 }
 
 /*
@@ -796,6 +849,28 @@ void econet_ll_rx_start(void *inst, uint8_t *buf, unsigned len)
 void econet_ll_rx_2way(void *inst, const uint8_t *data, unsigned len)
 {
 	EcoWkSpace *ws = (EcoWkSpace*)inst;
+	uint32_t intstat = save_and_disable_interrupts();
+
+//putchar('2');
+	// Should be waiting to tx the ACK to the scout
+	if (ws->state == ST_TXWAIT)
+	{
+		// Set up to transmit the supplied data (CRC added automatically)
+		ws->bufptr = (uint8_t*)data;	// Cast away const
+		ws->bleft = len;
+		// As it's only a 2-way handshake, tweak the frame number so
+		// this is the last frame.  Note that frame_no gets incremented
+		// on leaving ST_TXWAIT
+		ws->frame_no = 2;
+		// The following not strictly necessary - the buffer would be 'found'
+		// on the next TF event, but that guarantees to waste 8 bit-times
+		// (since the poll isn't done until just after the flag has gone)
+		consider_txwait_exit(ws->pio, ws);
+	}
+#if SANITY_CHECKS
+	else printf("rx_2way in state %u\n", ws->state);
+#endif
+	restore_interrupts(intstat);
 }
 
 /*
@@ -808,6 +883,24 @@ void econet_ll_rx_2way(void *inst, const uint8_t *data, unsigned len)
 void econet_ll_rx_final(void *inst)
 {
 	EcoWkSpace *ws = (EcoWkSpace*)inst;
+	uint32_t intstat = save_and_disable_interrupts();
+
+	// Should be waiting to tx that final ACK
+	if (ws->state == ST_TXWAIT)
+	{
+		// Set up to transmit just the addresses and CRC - no buffer as such
+		ws->bufptr = NULL;
+		ws->bleft = 2;
+		// The following not strictly necessary - the buffer would be 'found'
+		// on the next TF event, but that guarantees to waste 8 bit-times
+		// (since the poll isn't done until just after the flag has gone)
+		consider_txwait_exit(ws->pio, ws);
+	}
+#if SANITY_CHECKS
+	else printf("rx_final in state %u\n", ws->state);
+#endif
+
+	restore_interrupts(intstat);
 }
 
 
@@ -824,6 +917,19 @@ void econet_ll_rx_final(void *inst)
 void econet_ll_cancel_rx(void *inst, uint32_t pkt_id)
 {
 	EcoWkSpace *ws = (EcoWkSpace*)inst;
+	uint32_t intstat = save_and_disable_interrupts();
+
+	if (ws->pkt_id == pkt_id)
+	{
+		// If in idle or skipidle, the Rx is already over and doesn't
+		// need cancelling
+		if ((ws->state != ST_IDLE) && (ws->state != ST_SKIPIDLE))
+		{
+			// This leaves us in ST_SKIPIDLE
+			reset_interface(ws->pio, ws);
+		}
+	}
+	restore_interrupts(intstat);
 }
 
 /*
@@ -837,9 +943,29 @@ void econet_ll_cancel_rx(void *inst, uint32_t pkt_id)
 bool econet_ll_req_tx(void *inst, const uint8_t *scout, unsigned slen)
 {
 	EcoWkSpace *ws = (EcoWkSpace*)inst;
-	ws->pend_tx = scout;
+
+	// Can do this test outside critical region as this function is
+	// the only place pend_tx gets set (and this is really a sanity check
+	// anyhow).  Missing it getting cleared doesn't matter.
+	if (ws->pend_tx) return false;
+
+
+	uint32_t intstat = save_and_disable_interrupts();
 	ws->pend_len = slen;
-	return false;
+	ws->pend_tx = scout;
+
+	// If already idle, set the PIO wrap to cause it to start transmitting.
+	// In all other states, this will be done automatically at the point
+	// of transitioning to idle state.
+	if (ws->state == ST_IDLE)
+	{
+		// This should shortly cause a TF event and Tx to start
+		pio_sm_set_wrap(ws->pio, SM_NO,
+			econet_hdlc_offset_tx_wrap_target,
+			econet_hdlc_offset_tx_wrap_source);
+	}
+	restore_interrupts(intstat);
+	return true;
 }
 
 /*
@@ -855,6 +981,35 @@ bool econet_ll_req_tx(void *inst, const uint8_t *scout, unsigned slen)
 void econet_ll_tx_data(void *inst, const uint8_t *data, unsigned len, bool im2way)
 {
 	EcoWkSpace *ws = (EcoWkSpace*)inst;
+	uint32_t intstat = save_and_disable_interrupts();
+
+	// Should always be in TXWAIT - since we are driving the line, there's
+	// no way for the other end to abort, only exit is if we time it out
+	if (ws->state == ST_TXWAIT)
+	{
+		if (len)
+		{
+			ws->bufptr = (uint8_t*)data; // Cast to drop const as bufptr shared
+			ws->bleft = len;
+		}
+		else
+		{
+			// Not clear if zero length tx data is permitted, but just using
+			// bleft == 0 won't work because bleft is used as a data available
+			// flag.  To actually transmit zero bytes, must go straight to CRC
+			// by setting the pointer to NULL and bleft to 2.
+			ws->bufptr = NULL;
+			ws->bleft = 2;
+		}
+		// The following not strictly necessary - the buffer would be 'found'
+		// on the next TF event, but that guarantees to waste 8 bit-times
+		// (since the poll isn't done until just after the flag has gone)
+		consider_txwait_exit(ws->pio, ws);
+	}
+#if SANITY_CHECKS
+	else printf("tx_data in state %u\n", ws->state);
+#endif
+	restore_interrupts(intstat);
 }
 
 /*
@@ -863,11 +1018,47 @@ void econet_ll_tx_data(void *inst, const uint8_t *data, unsigned len, bool im2wa
 	Notes:		Can be called any time, though depending on timing it
 				may manage to cancel the tx before it even started,
 				or else be too late and it's already done.
+
+				If there is a transaction in progress, then need to check
+				that this is actually a Tx and not a subsequent Rx.
+				For an overall Tx, we are transmitting for frame nos 0,2
+				and listening for frame_no 1,3, so frame_no & 1 says
+				it's a frame we should be receiving.  Made slightly
+				more complex by the fact that frame_no is incremented
+				on exit from TXWAIT and RXTURN, so TXWAIT is a 'rx'
+				state for this analysis, even though it's driving the line
+				(and vice-versa for RXTURN).
 */
 
 void econet_ll_cancel_tx(void *inst)
 {
 	EcoWkSpace *ws = (EcoWkSpace*)inst;
+	uint32_t intstat = save_and_disable_interrupts();
+
+	// If the scout is still pending, it hasn't started yet and we
+	// can just get rid of it.
+	if (ws->pend_tx)
+	{
+		ws->pend_tx = NULL;
+		ws->pend_len = 0;
+	}
+	else if ( ((ws->state == ST_TX) || (ws->state == ST_RXTURN)
+				&& ((ws->frame_no & 1) == 0))
+			|| ((ws->state == ST_RX) || (ws->state == ST_TXWAIT)
+				&& (ws->frame_no & 1))
+			)
+	{
+		ws->state = ST_SKIPIDLE;
+		// Set default PIO wrap - this will terminate any tx that's
+		// in progress (data or flags) once Tx FIFO empty
+		pio_sm_set_wrap(ws->pio, SM_NO, econet_hdlc_wrap_target,
+			econet_hdlc_wrap);
+		// Disable Tx interrupts in case enabled.
+		hw_clear_bits(&ws->pio->inte0,
+			(PIO_IRQ0_INTE_SM0_TXNFULL_BITS << SM_NO));
+	}
+
+	restore_interrupts(intstat);
 }
 
 
@@ -899,6 +1090,7 @@ void *econet_ll_init(const EcoHWConfig *hw, const EcoLLCallbacks *callb)
 	// Save the supplied callbacks
 	workspace0.callb = *callb;
 	workspace0.state = ST_SKIPIDLE;
+	workspace0.pio = pio;
 
 	// Our program has to load at offset 0 in the PIO as it uses the
 	// entire available space.
