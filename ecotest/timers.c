@@ -38,7 +38,7 @@ static bool poll_1hz(repeating_timer_t *rt)
 	
 	ws->clock_hz = pwm_get_counter(pwm_gpio_to_slice_num(ws->clk_pin)) * 16;
 	pwm_set_counter(pwm_gpio_to_slice_num(ws->clk_pin), 0);
-	printf("Clk pin %u hz %u\n", ws->clk_pin, ws->clock_hz);
+//	printf("Clk pin %u hz %u\n", ws->clk_pin, ws->clock_hz);
 
 	// Line jammed: if pin is currently low, or there has been an
 	// edge in the last second, it's not jammed.
@@ -71,6 +71,7 @@ static bool poll_1hz(repeating_timer_t *rt)
 
 	// Tickle the system watchdog
 	watchdog_update();
+	return true;
 }
 
 /*
@@ -85,7 +86,7 @@ bool watcher_init(const EcoHWConfig *hw)
 	pwm_config cfg;
 	// Set up the PWMs to count clock and tx enable edges.
 
-	printf("pins %u %u\n", hw->clk_pin, hw->txen_pin);
+	printf("Watcher pins %u %u\n", hw->clk_pin, hw->txen_pin);
 
 	// Since we are only monitoring the txen pin which is pinmuxed to PIO
 	// for output, don't call gpio_set_function() on the txen.
