@@ -15,6 +15,9 @@
 #include "hardware/watchdog.h"
 
 #include "econet_ll.h"
+#include "econet_hl.h"
+
+#include "fs.h"
 
 // Hardware configuration to pass to the low level drivers
 static const EcoHWConfig eco_hw =
@@ -174,6 +177,7 @@ int main()
 	gpio_set_dir(ECONET_PIN_TERM_EN, GPIO_OUT);
 
 
+	fs_init();
 	printf(PROMPT);
 	cmdptr = cmdline;
 	for (;;)
@@ -204,5 +208,7 @@ int main()
 			}
 			else putchar(7);
 		}
+		// Our little fake Econet FS
+		poll_fs();
 	}
 }

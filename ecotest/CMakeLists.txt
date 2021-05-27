@@ -17,6 +17,7 @@ add_executable(ecotest
 	ecotest.c
 	crc16.c
 	timers.c
+	fs.c
 	econet_hl.c
 	econet_ll.c)
 

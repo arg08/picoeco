@@ -79,10 +79,13 @@ typedef struct
 		// version of this callback that always returns NULL.
 		// Note that on return the previous buffer won't be touched again
 		// so higher layer is free to start moving it.
-	void (*rx_end)(void);
+	void (*rx_end)(unsigned total_len);
 		// Called when all of the Rx data has been written to buffer(s).
 		// Should call econet_ll_rx_final() or econet_ll_cancel_rx()
-		// to complete the entire operation.
+		// to complete the entire operation. Param is total length received,
+		// not including CRC.  Note that where multiple buffers are in use,
+		// the last buffer might have -1 bytes in it (ie. end of packet
+		// was actually in the previous buffer). XXXX problem!
 	void (*rx_cancel)(unsigned err);
 		// Called during rx when an error has occurred - CRC error or
 		// the other end simply going away during the transaction.
@@ -146,7 +149,5 @@ extern void econet_ll_cancel_tx(void *inst);
 
 // Initialise one interface for Econet operation at low level.
 extern void *econet_ll_init(const EcoHWConfig *hw, const EcoLLCallbacks*callb);
-// Initialise one interface at higher level - calls through to low level.
-extern void econet_hl_init(const EcoHWConfig *hw);
 
 extern bool watcher_init(const EcoHWConfig *hw);

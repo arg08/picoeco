@@ -389,6 +389,7 @@ static inline void __not_in_flash_func(event_rf)(PIO pio, EcoWkSpace *ws)
 		}
 		else
 		{
+			
 			// Potentially good frame - check the CRC.
 			if (ws->crc != VALID_CRC16_FINAL)
 			{
@@ -399,6 +400,9 @@ static inline void __not_in_flash_func(event_rf)(PIO pio, EcoWkSpace *ws)
 			}
 			else
 			{
+				// save rx_count for use in a moment
+				unsigned count = ws->rx_count;
+
 				// Good frame: turn the line around unless this was the
 				// last frame of the transaction.
 				if ((ws->frame_no == 3) || (ws->rx_scout_buf[0] == 0xff))
@@ -433,14 +437,14 @@ static inline void __not_in_flash_func(event_rf)(PIO pio, EcoWkSpace *ws)
 				{
 					case 0:		// New scout frame
 						ws->callb.rx_scout(ws->rx_scout_buf,
-							ws->rx_count - 2,
+							count - 2,
 							ws->pkt_id);
 						break;
 					case 1:		// Received ack of Tx scout
 						ws->callb.tx_ready();
 						break;
 					case 2:		// Received main packet data
-						ws->callb.rx_end();
+						ws->callb.rx_end(count - 2);
 						break;
 					case 3:		// Received Tx final ack
 						ws->callb.tx_done(0);	// finished OK
@@ -593,6 +597,11 @@ void __not_in_flash_func(event_d)(PIO pio, EcoWkSpace *ws, uint32_t w)
 			&& (ws->bufptr != (ws->rx_scout_buf + sizeof(ws->rx_scout_buf))))
 		{
 			ws->bufptr = ws->callb.rx_extra_buf(&ws->bleft);
+// XXXXX Need to somehow keep at least 1 byte "in our back pocket"
+// XXXX as otherwise we put the first byte of CRC in a new buffer and
+// XXXX send it off before later discovering it isn't part of the packet data.
+// XXX also lesser problem of all Rx buffers needing to be 2 bytes larger
+// XXX than ever used
 		}
 		if (ws->bleft == 0)
 		{
@@ -635,7 +644,7 @@ void __not_in_flash_func(event_d)(PIO pio, EcoWkSpace *ws, uint32_t w)
 				}
 				// For data frame, once we've got the addresses,
 				// switch to the supplied buffer for the actual data.
-				else if (ws->frame_no == 1)
+				else if (ws->frame_no == 2)
 				{
 					ws->bufptr = ws->hl_rx_buf;	// Value provided earlier
 					ws->bleft = ws->hl_rx_len;
@@ -935,6 +944,7 @@ void econet_ll_cancel_rx(void *inst, uint32_t pkt_id)
 	Notes:		Supplied buffer is just the scout: packet data is
 				supplied later.  Buffer is NOT copied: caller to
 				ensure it remains available.
+				slen has top bit set to request only 2-way handshake.
 */
 
 bool econet_ll_req_tx(void *inst, const uint8_t *scout, unsigned slen)
