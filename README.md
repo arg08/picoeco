@@ -1,6 +1,21 @@
 # picoeco
 Support for Acorn Econet protocols on the Raspberry Pi Pico
 
+Hardware currently comprises simply the classic Econet circuit
+connected to pins on the Pico rather than a 6854 - the magic is
+in the Pico PIO rather than the circuit.
+
+Pin choice is relatively unimportant as the software takes a
+pin list on startup, though it's highly desirable for CLK_IN
+to be on an odd-numbered GPIO pin so that a PWM 'B' channel
+can be used to measure clock speed.
+
+Software has notional support for more than one Econet interface
+on the Pico, (eg to allow it to be an Econet bridge) though not yet
+fully developed.
+
+Current hardware has CLK_IN and CLK_OUT on different pins: they
+could sensibly share a pin on pin-constrained designs.
 
 
 How to build
