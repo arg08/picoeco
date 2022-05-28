@@ -9,11 +9,10 @@
 //#include <stdio_uart.h>
 #include "hardware/pio.h"
 #include "hardware/clocks.h"
-#include "hardware/structs/pwm.h"
-#include "hardware/pwm.h"
 #include "hardware/uart.h"
 #include "hardware/watchdog.h"
 
+#include "board_specific.h"
 #include "econet_ll.h"
 #include "econet_hl.h"
 
@@ -23,24 +22,15 @@
 static const EcoHWConfig eco_hw =
 {
 	.pio_no = 0,	// Arbitrarily choose PIO unit 0
-	.clk_pin = 9,	// Econet clock input pin number
-	.rxd_pin = 11,	// Econet RxD input pin number
-	.txd_pin = 12,	// Econet TxD output pin number
-	.txen_pin = 13,	// Econet Tx enable output pin number
-	.cts_pin = 10,	// Econet CTS (/collision detect) input pin number
+	.clk_pin = ECONET_PIN_CLOCK,	// Econet clock input pin number
+	.rxd_pin = ECONET_PIN_RXD,		// Econet RxD input pin number
+	.txd_pin = ECONET_PIN_TXD,		// Econet TxD output pin number
+	.txen_pin = ECONET_PIN_TX_EN,	// Econet Tx enable output pin number
+	.cts_pin = ECONET_PIN_CTS,		// Econet CTS (/collision detect) input pin
 };
-
-// These are for the auxiliary clock/terminate functions,
-// not strictly part of the main econet interface and so
-// implemented in this file rather than econet_ll.
-#define	ECONET_PIN_CLKOUT	14	// Output clock
-#define	ECONET_PIN_CLK_EN	15	// Active high enable for clock generator
-#define	ECONET_PIN_TERM_EN	16	// Active high terminator enable
 
 static char cmdline[100];
 #define	PROMPT	"\npicoeco>"
-
-
 
 // -----------------------------------------------------------------
 
@@ -83,11 +73,11 @@ static void execute_cmd(const char *cmd)
 	{
 		if (!strncmp("off", p, 3))
 		{
-			gpio_put(ECONET_PIN_CLK_EN, 0);
+			board_enable_clock(0);
 		}
 		else if (!strncmp("on", p, 2))
 		{
-			gpio_put(ECONET_PIN_CLK_EN, 1);
+			board_enable_clock(1);
 		}
 		else
 		{
@@ -96,20 +86,11 @@ static void execute_cmd(const char *cmd)
 			{
 				// Zero, or something simply not numeric
 				printf("Clock is %s\n", 
-				gpio_get(ECONET_PIN_CLK_EN) ? "on" : "off");
+				board_clock_enabled() ? "on" : "off");
 			}
 			else
 			{
-				uint32_t period = clock_get_hz(clk_sys) / rate;
-				pwm_config cfg = pwm_get_default_config();
-				// Set up the clock and turn it on
-				printf("Setting clock to %u Hz (%u)\n", rate, (unsigned)period);
-				pwm_config_set_wrap(&cfg, period);
-
-				pwm_init(pwm_gpio_to_slice_num(ECONET_PIN_CLKOUT), &cfg, true);
-				// 1:1 clocks are fine for short networks.
-				pwm_set_gpio_level(ECONET_PIN_CLKOUT, period/2);
-				gpio_put(ECONET_PIN_CLK_EN, 1);
+				board_enable_clock(rate);
 			}
 		}
 	}
@@ -117,14 +98,14 @@ static void execute_cmd(const char *cmd)
 	{
 		if (!strncmp("off", p, 3))
 		{
-			gpio_put(ECONET_PIN_TERM_EN, 0);
+			board_enable_terminator(false);
 		}
 		else if (!strncmp("on", p, 2))
 		{
-			gpio_put(ECONET_PIN_TERM_EN, 1);
+			board_enable_terminator(true);
 		}
 		printf("Terminator is %s\n",
-			gpio_get(ECONET_PIN_TERM_EN) ? "on" : "off");
+			board_terminator_enabled() ? "on" : "off");
 	}
 	else if (!strncmp(cmd, "peek", len))
 	{
@@ -160,22 +141,13 @@ static void execute_cmd(const char *cmd)
 int main()
 {
 	char *cmdptr;
-//	stdio_init_all();
-	stdio_uart_init_full(uart0, 2000000, 0, 1);
+	board_specific_init();
 	printf("Ecotest\n");
 	if (watchdog_caused_reboot()) printf("Watchdog reboot\n");
 
+
 	econet_hl_init(&eco_hw);
 	watcher_init(&eco_hw);
-
-	// The remaining pins aren't part of the econet interface, so we
-	// set them up here.
-	gpio_set_function(ECONET_PIN_CLKOUT, GPIO_FUNC_PWM);
-	// This init also sets the output value low.
-	gpio_init_mask( (1<<ECONET_PIN_CLK_EN) | (1<<ECONET_PIN_TERM_EN));
-	gpio_set_dir(ECONET_PIN_CLK_EN, GPIO_OUT);
-	gpio_set_dir(ECONET_PIN_TERM_EN, GPIO_OUT);
-
 
 	fs_init();
 	printf(PROMPT);

@@ -12,6 +12,7 @@
 
 // Prototypes for this module
 #include "econet_ll.h"
+#include "board_specific.h"
 
 typedef struct workspace_1hz
 {
@@ -67,7 +68,7 @@ static bool poll_1hz(repeating_timer_t *rt)
 	}
 
 	// Toggle LED
-	gpio_xor_mask(1 << PICO_DEFAULT_LED_PIN);
+	board_toggle_led();
 
 	// Tickle the system watchdog
 	watchdog_update();
@@ -88,15 +89,6 @@ bool watcher_init(const EcoHWConfig *hw)
 
 	printf("Watcher pins %u %u\n", hw->clk_pin, hw->txen_pin);
 
-	// Since we are only monitoring the txen pin which is pinmuxed to PIO
-	// for output, don't call gpio_set_function() on the txen.
-	// Conversely, clock has to be pinmuxed to PWM otherwise PWM won't
-	// use the input, but PIO can spy on inputs regardless of muxing.
-	gpio_set_function(hw->clk_pin, GPIO_FUNC_PWM);
-
-	// Going to use the LED for flashing
-	gpio_init(PICO_DEFAULT_LED_PIN);
-	gpio_set_dir(PICO_DEFAULT_LED_PIN, GPIO_OUT);
 
 	// Save the pin numbers to use in the callback fn
 	ws->clk_pin = hw->clk_pin;
