@@ -119,6 +119,23 @@
 ; unwanted ones out the bottom, ARM at the top end).
 ; Fortunately, the IN ISR instruction lets us swap over two chunks of ISR
 
+; --------------------------------------------------------------------------
+; An alternative approach (not implemented here)
+;
+; Rather than doing address matching, the read engine could respond to
+; every Fred read transaction.  If the DMA were then configured to transfer
+; 16 bits rather than 8, the additional 8 bits could be used for the pindirs.
+; This would give a single array of 512 bytes for the 256 emulated
+; registers - each one having one byte for the value, and a 2nd byte for
+; enable (0xff to enable, 0 to disable.  This would give unlimited flexibility
+; for how many registers are implemented at which addresses (keeping,
+; like the current scheme, the ability to live on the 1MHz bus with other
+; devices), at the cost of an extra 256 bytes of RAM.  There's no performance
+; penalty on 'supported' addresses (since fetching the 16 bits takes the
+; same as the current 8 bits given it's a 32-bit bus), though potentially
+; a little wasted bus bandwidth spuriously fetching bytes for addresses
+; belonging to other devices - but at max 1 cycle per couple of microseconds
+; not really significant.
 
 
 ; --------------------------------------------------------------------------
