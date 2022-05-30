@@ -17,6 +17,13 @@ fully developed.
 Current hardware has CLK_IN and CLK_OUT on different pins: they
 could sensibly share a pin on pin-constrained designs.
 
+New: code is now structured to build for multiple different platforms,
+parameterised by a board file - in the boards/ subdirectory here.
+These are derivitives of the boards/pico.h that comes with the pico API -
+for hardware using an actual pico, you can just define how econet is
+wired up and then #include <boards/pico.h>.  For custom boards that
+may be more or less similar to a Pico, define everything in a new board
+file.  There are examples of both in there now.
 
 How to build
 ------------
@@ -37,7 +44,7 @@ Build one of the projects within it:
 cd picoeco/ecotest
 mkdir build
 cd build
-cmake ..
+cmake .. -DPICO_BOARD=eco_skt_box
 make
 
 (similarly for picoeco/netmon etc)
@@ -77,6 +84,7 @@ in the distribution:
 
 git clone -b master https://github.com/raspberrypi/picotool.git
 
+```
 --- a/cmake/FindLIBUSB.cmake
 +++ b/cmake/FindLIBUSB.cmake
 @@ -20,7 +20,7 @@ else (LIBUSB_INCLUDE_DIR AND LIBUSB_LIBRARIES)
@@ -88,6 +96,7 @@ git clone -b master https://github.com/raspberrypi/picotool.git
              PATHS ${PC_LIBUSB_LIBDIR} ${PC_LIBUSB_LIBRARY_DIRS})
      include(FindPackageHandleStandardArgs)
      FIND_PACKAGE_HANDLE_STANDARD_ARGS(LIBUSB DEFAULT_MSG LIBUSB_LIBRARIES LIBUSB_INCLUDE_DIR)
+```
 
 ie. just add "usb" after "usb-1.0" on the FIND_LIBRARY line.
 
