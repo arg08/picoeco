@@ -19,7 +19,7 @@ could sensibly share a pin on pin-constrained designs.
 
 New: code is now structured to build for multiple different platforms,
 parameterised by a board file - in the boards/ subdirectory here.
-These are derivitives of the boards/pico.h that comes with the pico API -
+These are derivitives of the boards/pico.h that comes with the pico SDK -
 for hardware using an actual pico, you can just define how econet is
 wired up and then #include <boards/pico.h>.  For custom boards that
 may be more or less similar to a Pico, define everything in a new board
