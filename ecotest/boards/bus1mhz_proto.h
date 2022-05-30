@@ -22,6 +22,36 @@
 
 // NB. not defining ECONET_PIN_CLK_EN, ECONET_PIN_TERM_EN, PICO_DEFAULT_LED_PIN
 
+// Pins for the 1MHz bus interface
+#define	HAS_1MHZ_BUS	1
+
+#define	B1M_PIN_BASE	1		// First pin is GPIO1
+#define	B1M_PIN_COUNT	20		// Total 20 pins used (not counting nRST
+								// which doesn't get a dedicated pin)
+
+#define	B1M_PIN_D0		1
+#define	B1M_PIN_D1		2
+#define	B1M_PIN_D2		3
+#define	B1M_PIN_D3		4
+#define	B1M_PIN_D4		5
+#define	B1M_PIN_D5		6
+#define	B1M_PIN_D6		7
+#define	B1M_PIN_D7		8
+#define	B1M_PIN_A0		9
+#define	B1M_PIN_A1		10
+#define	B1M_PIN_A2		11
+#define	B1M_PIN_A3		12
+#define	B1M_PIN_A4		13
+#define	B1M_PIN_A5		14
+#define	B1M_PIN_A6		15
+#define	B1M_PIN_A7		16
+#define	B1M_PIN_nJIM	17
+#define	B1M_PIN_nFRED	18
+#define	B1M_PIN_RnW		19
+#define	B1M_PIN_1MHZE	20
+
+
+
 // --- UART ---
 #define PICO_DEFAULT_UART 0
 #define PICO_DEFAULT_UART_TX_PIN 0

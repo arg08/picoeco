@@ -1,0 +1,336 @@
+;
+; Copyright (c) 2022 Gordon Design Ltd
+;
+; SPDX-License-Identifier: BSD-3-Clause
+;
+
+.define	PIN_1MHZE	20
+
+; --------------------------------------------------------------------------
+; BBC micro 1MHz bus interface to RP2040
+; --------------------------------------
+;
+; We have 20 of the 24 1MHz bus signals via level shifters to 20
+; contiguous GPIOs, starting from the lowest numbered:
+;
+;  D[0:7], A[0:7], nJIM, nFRED, RnW, 1MHzE
+;
+; The missing signals are nRST, nNMI and nIRQ which are handled by the CPU
+; and not processed in the PIO machine, plus, AnalogueAudio (not used at all).
+
+; Note that we only have 1MHzE, a free-running 1MHz clock, where the
+; CPU clock is normally 2MHz but stretched when accessing 1MHz
+; peripherals.  There is a falling edge of 2MHz aligned with every
+; (rising or falling) edge of the 1MHzE that we can see - and
+; correspondingly a rising edge in the middle of each 1MHz high or
+; low time.  Depending on the phase relationship of 1MHz and 2MHz
+; clocks, the CPU clock skips 1 or 2 cycles of the 2MHz.  Note that
+; 2MHzE (and so CPU bus timing) is not perfectly aligned with the
+; 1MHzE, since 1MHzE is derived from the input clocks that feed Phi-in
+; on the CPU, while 2MHzE is inverted Phi1-out from the CPU, and there
+; is an ill-defined delay through the CPU Phi-in to Phi-out.  (good
+; diagram in the 1MHz appnote, though it only shows the two cycle
+; skip case)
+
+; There is the kludge described in the 1MHz bus appnote where
+; false triggers of nFRED/nJIM and double reads can occur.  There are
+; two problems:
+;  - After 1MHzE goes high when it's not actually a 1MHz cycle
+;    the CPU will be doing another 2MHz cycle and may glitch
+;    nFred as the addresses change.
+;  - When the CPU clock is stretched, given the fixed phase of 1MHzE,
+;    the address can become valid during the high time of 1MHzE,
+;    but the clock stretcher has to wait for the next whole cycle
+;    of 1MHzE - hence a simplistic peripheral that just gated
+;    address decode with 1MHzE would give two accesses: one short
+;    one in the first cycle, then the 'proper' one in the 2nd cycle.
+;
+; Official suggested fix for this is to latch nFred/nJim on the rising
+; edge of 1MHzE - here, we latch all the addresses on rising 1MHzE.
+; In fact, the addresses are valid 300ns ahead of the edge and nFred
+; 250ns ahead of the edge, so given that it's a free-running clock we
+; could time a point a bit ahead of the edge (by counting from the
+; previous edge) and latch the signals there, buying a bit of extra
+; processing time.  However, we meet the timing easily so don't bother.
+;
+; Read data must be supplied 200ns ahead of the falling edge,
+; ie. 300ns after the rising edge, so we have 300ns from latching that
+; data to request the read data from the ARM and get it out to the pins.
+; This we handle entirely by DMA, hence avoiding CPU interrupt latency.
+;
+; We use two separate PIO programs: one which handles read cycles within
+; a certain address range on the 1MHz bus, via DMA without CPU involvement,
+; and one which captures all active bus cycles (both read and write),
+; sending the address/data to the CPU for processing.  The CPU thus handles
+; the less urgent aspect of readying the next value of read-sensitive
+; I/O ports and all write operations.  We have just one instance of the
+; CPU-feeder - the CPU can demux multiple emulated peripherals just as
+; easily from the value supplied as it could demux multiple IRQs if we
+; used multiple instances, and it can readily discard transactions on
+; addresses that we are not trying to emulate at all.
+; Multiple instances of the read engine however allow us to co-exist
+; on the bus with other devices as we only drive it on an address match
+; but can support more than one range.
+;
+; Each read engine requires 2 DMA channels: the PIO program puts into
+; the Rx FIFO an ARM address corresponding to the vector of current port
+; values.  The first DMA engine is set up for multiple transfers with
+; DREQ from the PIO instance, and a destination of the the 2nd DMA's
+; READ_ADDR_TRIG register.  The second DMA is set up for single transfer
+; with no DREQ, and destination of the PIO's Tx FIFO.  So the PIO
+; puts the address in the Rx FIFO, 1st DMA runs from DREQ and triggers
+; the 2nd DMA which reads the byte from RAM into the PIO's Tx FIFO.
+; PIO program then writes the value out onto pins.
+;
+; The read engine needs an address value to match and a number of bits
+; to concatenate with the low BBC address bits to make the ARM address.
+; At first glance, it seems like we might put one in X and the other in Y,
+; but unfortunately the only way to do matching is the JMP X!=Y instruction,
+; so only one register is can be constant and we have to use it for the match
+; value (with the other one being workspace with the value off the pins).
+; If we were prepared to have a fixed base for the ARM address, we could
+; just load it in with SET instructions, but ideally we want multiple
+; instances of the same program with different values in registers.
+; We can cheat by having Y containing some bits of match pattern and
+; some bits of ARM address - we then duplicate the ARM address bits into
+; the value off the pins that is being matched so that those bits don't
+; affect the matching and are still there afterwards when we come to
+; construct the ARM address.
+
+; If we are emulating a block of registers with n bits used to select
+; the register (eg. n=3 for a block of 8 registers), then we need to
+; match 11-n bits (8-n address bits plus nFred, nJim and RnW).
+; So 32-11+n = 21+n bits are available to hold the ARM address.
+; All ARM RAM addresses have the top 13 bits set to 0x2000xxxx, so we can
+; construct an ARM address with n bits from the BBC, 13 bits fixed
+; and need (19-n) bits from configuration.  So in fact we have bits to spare,
+; even for n=0 or n=1.  For n=3, we have 24 bits available and
+; only need to fabricate 8.
+
+; The input shift register must be set to shift right, because we need
+; all the input bits available (hence can't mask off the n by using the
+; input pins configuration set narrower), and so have to mask them off
+; by loading the whole lot and shifting the ones we don't want out of
+; the end of the ISR - right shift so we mask off the low bits.
+; This is inconvenient as the ARM bits have to be at the LSB end of Y
+; (so we can get just those bits and not the whole thing when we
+; come to load them into the ISR), so when assembling the match value
+; they end up the wrong way round (BBC bits in LSB as we've just shifted
+; unwanted ones out the bottom, ARM at the top end).
+; Fortunately, the IN ISR instruction lets us swap over two chunks of ISR
+
+
+
+; --------------------------------------------------------------------------
+
+; Main SM capturing all transactions for CPU to process side-effects.
+; In mapping gets everything, RnW-nFred-nJim-A[7:0]-D[7:0] (19 bits)
+; Out/set/sideset pinmappings not used.
+; 1MHZE is accessed by a direct GPIO reference, not using the pin mappings.
+; No autopull/push (can't use autopush as using ISR shifts for masking)
+; Y is currently not used: could be pre-loaded as an address pattern match,
+; but this version captures all 1MHz bus transactions.
+; X used as scratch workspace.
+
+.program bus1mhz_main
+  set X,0					; Avoid spurious cycle first time round.
+							; This instruction could be saved by doing extra
+							; setup from the C side if we run out of space.
+.wrap_target
+mainloop:
+  wait 0 gpio PIN_1MHZE
+  in pins, 19				; Capture everything immediately after falling edge
+							; (there are 19 bits not including 1MHZE itself)
+  in null, 13				; Right-justify in 32 bits
+  jmp !x nopush				; X remembers from earlier if we had addr match
+							; (would be jmp X!=Y if actually doing matching)
+
+  push noblock				; Actually push the details of the transaction,
+							; RnW in bit 18, data in low 8 bits if write.
+							; Address in bits 8..17 counting nFred/nJim
+							; as two extra address bits
+							; Note we could easily have filtered only writes
+							; if we wanted to.
+							; Use noblock as it's more important to remain
+							; in sync with 1MHz, and we can't do much about
+							; it if the CPU isn't servicing the FIFO
+
+nopush:
+  wait 1 GPIO PIN_1MHZE
+
+  in pins, 18	; Get everything apart from RnW
+  mov isr,~isr	; Invert everything
+  in null,30	; Shunt all but 2 bits back out, keeping Fred/Jim
+				; NB. could keep more bits here to do an address match
+				; but this version captures all 1MHz bus tranactions.
+  mov x,isr		; X= 0 if nFred/nJim both high
+				; This value in X is used at the top of the loop
+				; when 1MHzE goes low again to know whether this was
+				; a cycle worth reporting to the CPU.
+.wrap
+
+
+; --------------------------------------------------------------------------
+; Read handling.
+; Pre-loaded with Y holding some BBC address bits to do a match,
+; and some ARM address bits to construct the ARM address holding a block
+; of register values that are to be output back to the BBC.
+; On a read transaction that matches the target address range, the
+; corresponding ARM address is placed in the Rx FIFO.  DMA then fetches
+; that data and places it in the Tx FIFO and this PIO program then outputs
+; it on the BBC data bus.
+;
+; In pinmapping points to A0 (so capturing nFred/nJim in high bits)
+; No autopush (as we play games in the ISR for address matching first)
+; Out pinmapping points to D0
+; Autopull enabled, shift right, 8 bits.
+;
+; This logic can in principle do a block of registers of any power-of-2
+; size - with n low bits of the BBC address feeding through as low bits
+; of the ARM address and the higher bits being matched.  This version
+; does blocks of 8 (n=3), and is mostly parameterised but would need
+; tweaking of the code that inserts the fixed high bits of ARM address
+; for other values of n.
+
+.program bus1mhz_read8
+.side_set 3 opt pindirs
+.define nbits 3
+
+; Enter here 3 ways:
+;  - on first startup of the machine
+;  - by JMP nomatch soon after the rising edge of 1MHzE if the address
+;    doesn't match one we need to respond to
+;  - by wrap from the bottom of the loop, having just output the read data
+;    onto the bus and needing to disable outputs after falling 1MHzE
+.wrap_target
+nomatch:
+; Wait for 1MHzE to go low
+; Delay attached to the wait instruction helps ensure data hold time
+; Note that there's 2 clocks delay through the PIO input structures
+; so we are sampling 1MHzE 2 clocks later than reality, plus 1 clock for
+; the instruction and 1 clock for the [1] delay and 1 for the 'set pindirs'
+; means a total of 6 RP2040 clocks from falling 1MHzE to the data turning off,
+; giving 48ns at 133MHz.  The further [1] delay on the 'set pindirs'
+; instruction guards against bounce on the 1MHzE being seen as another edge
+; (ideally we'd have more, but most of the wait bits have been used up with
+; sideset).
+  wait 0 GPIO PIN_1MHZE [1]	
+  set pindirs,0 side 0 [1]
+  wait 0 GPIO PIN_1MHZE	; Await rising edge of 1MHzE
+  in pins,11  			; All 11 matchable bits (including RnW) regardless of n
+  in Y, (21+nbits)		; Shift in the ARM address bits that we don't really
+						; want at this point but need to be there as we
+						; match against the whole of Y.
+						; The act of shifting in 21+n means n bits are thrown
+						; away at the low end so they don't get matched
+  in ISR, (11-nbits)	; Rotate things around so the (11-n) bits from the pins
+						; are at the MSB end and the ARM bits are back at the
+						; LSB end where they are in Y
+  mov X, ISR			; Now ready to match the value we've built in ISR
+						; against Y, but only compare instruction is X!=Y
+
+  in pins, (nbits)		; Grab a copy of the the n bits we threw away
+						; ready to use in the ARM address
+
+  jmp X!=Y nomatch		; Jump if we aren't in fact doing anything this cycle
+
+  in Y, (21+nbits)		; Prefix the low bits from the BBC with higher bits
+						; of ARM address from Y - but still not enough
+						; for the full 32 bit address so we have to synthesise
+						; the upper fixed bits (0x200xxxxx).
+						; We have 21+n bits of address from Y, n bits of BBC
+						; address off the pins, so need 11-(n*2) bits
+						; fabricated here.
+	; This version n=3 so need to fabricate 5 bits.  X is free as workspace.
+  set X,0b00100
+  in X, 5
+  push
+  out pins,8			; Stalls here until host side supplies the data
+  set pindirs,31 side 7	; Turn on 5 pins by set and the other 3 by side-set
+.wrap
+
+
+
+
+% c-sdk {
+static inline void bus1mhz_main_program_init(PIO pio, uint sm, uint offset)
+{
+	pio_sm_config cfg = bus1mhz_main_program_get_default_config(offset);
+
+	// This SM wants to read everything (address + data) all in one go.
+	sm_config_set_in_pins(&cfg, B1M_PIN_D0);
+	// No out/set/sideset pin mappings.
+	// Since it's input-only, we can join the FIFOs for deeper buffering
+	sm_config_set_fifo_join(&cfg, PIO_FIFO_JOIN_RX);
+	// Shift right, no autopush.  We do push 19 bits, but no need to set here.
+	sm_config_set_in_shift(&cfg, true, false, 19);
+
+	// Entrypoint is at the start of the program
+	pio_sm_init(pio, sm, offset, &cfg);
+
+	// pio_sm_set_enabled() left for the caller to do once it has hooked
+	// the interrupt to service the FIFO.
+}
+
+
+// BBC address should be a value in the range 0xfc00 to 0xfdff
+static inline void bus1mhz_read8_program_init(PIO pio, uint sm, uint offset, uint bbc_addr, uint8_t *register_file)
+{
+	uint32_t y_val;
+	pio_sm_config cfg = bus1mhz_read8_program_get_default_config(offset);
+
+	// Program uses SET to do 5 bits of pindirs (D0-D4), then needs
+	// side-set to do the other 3 bits in the same instruction.
+	// Actual output does all 8 pins via the 'pins' mapping.
+	sm_config_set_sideset_pins(&cfg, B1M_PIN_D5);
+	sm_config_set_set_pins(&cfg, B1M_PIN_D0, 5);
+	sm_config_set_out_pins(&cfg, B1M_PIN_D0, 8);
+	// Input only looks at the address and control bits, not the data
+	sm_config_set_in_pins(&cfg, B1M_PIN_A0);
+	// Input: shift right, no autopush.  Setting threshold=32 has no effect.
+	sm_config_set_in_shift(&cfg, true, false, 32);
+	// Output: shift right, autopull, 8 bits.
+	sm_config_set_out_shift(&cfg, true, true, 8);
+
+	// Entrypoint is at the start of the program
+	pio_sm_init(pio, sm, offset, &cfg);
+
+	// Now need to load the Y register inside the SM with some bits for
+	// an address match and some bits for the ARM address of the registers
+	// BBC Address bits are at the high end, starting with RnW, nFred, nJIM
+	// ARM address is at the low end of Y, but are a chunk out of the middle
+	// of the full 32-bit ARM address: low-order bits are chopped off because
+	// they will be replaced by low-order BBC bits to select
+	// a register within the register file (which must be aligned to
+	// its own size), and high bits are chopped off to make room for the
+	// address match bits.
+	// Since this is an 8-register version, there are 3 bits used to select
+	// the register and 8 bits (out of the full 11) for address match,
+	// so 24 bits of the ARM address, >> 3.
+	y_val = (((uint32_t)register_file) >> 3) & 0x00ffffff;
+	// Now add in the address match.  This SM is only interested in reads,
+	// so RnW must be '1'.
+	y_val |= 1<<31;
+	// We need to map the 0xFCxx values in the parameter
+	// to nFred=0, nJim=1 and 0xFDxx into nFred=1, nJim=0
+	// nFred is bit 30, nJim is bit 29
+	if ((bbc_addr & 0xff00) == 0xfc00) 
+		y_val |= (1<<29);		// Address in Fred area - nJim = 1
+	else  y_val |= (1<<30);		// Assume in Jim area - nFred = 1
+
+	// Finally mask off the 3 least-significant bits not to be matched
+	// and move the remaining 5 bits into bit28 downwards
+	y_val |= (bbc_addr & 0xf8) << (28 - 7);
+
+	// Need to get this value we've computed into the Y register.
+	// We do this by writing it into the FIFO (where it will auto-pop)
+	// then executing an out Y,32 instruction
+	pio_sm_put(pio, sm, y_val);
+	pio_sm_exec(pio, sm, pio_encode_out(pio_y, 32));
+
+	// pio_sm_set_enabled() left for the caller to do once it has
+	// set up the DMAs to service the FIFO.
+}
+
+
+%}

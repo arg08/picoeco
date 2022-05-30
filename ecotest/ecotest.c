@@ -15,6 +15,9 @@
 #include "board_specific.h"
 #include "econet_ll.h"
 #include "econet_hl.h"
+#if HAS_1MHZ_BUS
+#include "bus1mhz.h"
+#endif
 
 #include "fs.h"
 
@@ -30,7 +33,8 @@ static const EcoHWConfig eco_hw =
 };
 
 static char cmdline[100];
-#define	PROMPT	"\npicoeco>"
+
+#define	PROMPT	"\n" PICO_BOARD ">"
 
 // -----------------------------------------------------------------
 
@@ -148,6 +152,9 @@ int main()
 
 	econet_hl_init(&eco_hw);
 	watcher_init(&eco_hw);
+#if HAS_1MHZ_BUS
+	bus1mhz_init();
+#endif
 
 	fs_init();
 	printf(PROMPT);
