@@ -11,7 +11,7 @@
 #include "hardware/dma.h"
 
 // Our assembled program:
-#include "bus1mhz.pio.h"
+#include "bus1mhzproto.pio.h"
 
 // Bank of registers for read purposes, accessed by DMA.
 // Has to be aligned to its own size.
