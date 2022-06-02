@@ -29,24 +29,24 @@ How to build
 ------------
 
 Install the pico-sdk somewhere and set PICO_SDK_PATH to point at it.
-
+```
 git clone -b master https://github.com/raspberrypi/pico-sdk.git
 cd pico-sdk
 git submodule update --init
 setenv PICO_SDK_PATH `pwd`
-
+```
 Fetch this repository:
-
+```
 git clone https://github.com/arg08/picoeco.git
-
+```
 Build one of the projects within it:
-
+```
 cd picoeco/ecotest
 mkdir build
 cd build
 cmake .. -DPICO_BOARD=eco_skt_box
 make
-
+```
 (similarly for picoeco/netmon etc)
 This generates a binary ecotest.uf2
 
@@ -57,9 +57,9 @@ held (or hold down the button on the pico and press the reset button).
 
 Either mount the pico as if it were a USB memory stick and copy the .uf2
 file onto it, or else build picotool and use:
-
+```
  picotool load netmon.uf2 -x
-
+```
 
 
 Building on FreeBSD notes
