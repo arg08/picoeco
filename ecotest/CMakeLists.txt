@@ -28,7 +28,6 @@ set(MAIN_EXECUTABLE eco_skt_box)
 add_executable(${MAIN_EXECUTABLE}
 	ecotest.c
 	board_specific.c
-	bus1mhz.c
 	crc16.c
 	timers.c
 	fs.c
