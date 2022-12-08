@@ -74,13 +74,14 @@
 ;
 ; Each read engine requires 2 DMA channels: the PIO program puts into
 ; the Rx FIFO an ARM address corresponding to the vector of current port
-; values.  The first DMA engine is set up for multiple transfers with
-; DREQ from the PIO instance, and a destination of the the 2nd DMA's
-; READ_ADDR_TRIG register.  The second DMA is set up for single transfer
-; with no DREQ, and destination of the PIO's Tx FIFO.  So the PIO
-; puts the address in the Rx FIFO, 1st DMA runs from DREQ and triggers
-; the 2nd DMA which reads the byte from RAM into the PIO's Tx FIFO.
-; PIO program then writes the value out onto pins.
+; values.  The first DMA engine is set up with DREQ from the PIO instance,
+; and destination as the the 2nd DMA's READ_ADDR_TRIG register.
+; The second DMA is set up for single transfer with no DREQ, and destination
+; of the PIO's Tx FIFO.  So the PIO puts the address in the Rx FIFO,
+; 1st DMA runs from DREQ and triggers; the 2nd DMA which reads the byte
+; from RAM into the PIO's Tx FIFO.  PIO program then writes the value
+; out onto pins. 2nd DMA then chains the 1st one to be ready for the next
+; cycle.
 ;
 ; The read engine needs an address value to match and a number of bits
 ; to concatenate with the low BBC address bits to make the ARM address.
@@ -264,6 +265,56 @@ nomatch:
   push
   out pins,8			; Stalls here until host side supplies the data
   set pindirs,31 side 7	; Turn on 5 pins by set and the other 3 by side-set
+.wrap
+
+
+; Alternate version, starting with Y = match value OSR = ARM address
+; This needs autopull disabled.
+.program bus1mhz_read8_xy
+.side_set 3 opt pindirs
+.define nbits 3
+
+; Enter here 3 ways:
+;  - on first startup of the machine
+;  - by JMP nomatch soon after the rising edge of 1MHzE if the address
+;    doesn't match one we need to respond to
+;  - by wrap from the bottom of the loop, having just output the read data
+;    onto the bus and needing to disable outputs after falling 1MHzE
+.wrap_target
+nomatch:
+; Wait for 1MHzE to go low
+; Delay attached to the wait instruction helps ensure data hold time
+; Note that there's 2 clocks delay through the PIO input structures
+; so we are sampling 1MHzE 2 clocks later than reality, plus 1 clock for
+; the instruction and 1 clock for the [1] delay and 1 for the 'set pindirs'
+; means a total of 6 RP2040 clocks from falling 1MHzE to the data turning off,
+; giving 48ns at 133MHz.  The further [1] delay on the 'set pindirs'
+; instruction guards against bounce on the 1MHzE being seen as another edge
+; (ideally we'd have more, but most of the wait bits have been used up with
+; sideset).
+  wait 0 GPIO PIN_1MHZE [1]	
+  set pindirs,0 side 0 [1]
+  wait 1 GPIO PIN_1MHZE	; Await rising edge of 1MHzE
+  in pins,11  			; All 11 matchable bits (including RnW) regardless of n
+  in NULL,(nbits+32-11)	; Shunt out nbits at the low end.
+  mov X, ISR			; Now ready to match the value we've built in ISR
+						; against Y, but only compare instruction is X!=Y
+
+  in pins, (nbits)		; Grab a copy of the the n bits we threw away
+						; ready to use in the ARM address
+  jmp X!=Y nomatch		; Jump if we aren't in fact doing anything this cycle
+
+  in OSR, (32-nbits)	; Prefix the ARM address to the ISR (OSR unchanged)
+  push					; Push the combined adddress
+
+  mov X,OSR				; Hastily save the ARM address so we can use the OSR
+
+  pull
+  out pins,8			; Stalls here until host side supplies the data
+
+  set pindirs,31 side 7	; Turn on 5 pins by set and the other 3 by side-set
+
+  mov OSR,X				; Put the ARM address back in OSR
 .wrap
 
 
