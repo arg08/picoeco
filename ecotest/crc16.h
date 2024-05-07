@@ -1,7 +1,7 @@
 
 #include <stdint.h>
 
-uint16_t crc16_table[256];
+extern uint16_t crc16_table[256];
 
 extern void init_crc16_table(void);
 

@@ -16,9 +16,13 @@
 
 #define	BOARD_CTRL_BIT_CLK_EN	(1<<4)
 #define	BOARD_CTRL_BIT_TERM_EN	(1<<5)
-#define	BOARD_CTRL_BIT_LED		(1<<3)
+#define	BOARD_CTRL_BIT_LED		(1<<3)	// Also EPROM power ena
 #define	BOARD_CTRL_BIT_BBC_NMI	(1<<1)
 #define	BOARD_CTRL_BIT_BBC_IRQ	(1<<2)
+
+
+#define	BOARD_CTRL_BIT_A4	(1<<16)
+#define	BOARD_CTRL_BIT_A17	(1<<29)
 
 // NB. not defining ECONET_PIN_CLK_EN, ECONET_PIN_TERM_EN, PICO_DEFAULT_LED_PIN
 
@@ -49,6 +53,25 @@
 #define	B1M_PIN_nFRED	18
 #define	B1M_PIN_RnW		19
 #define	B1M_PIN_1MHZE	20
+
+
+#define	ROM_PIN_D0		1
+#define	ROM_PIN_D1		2
+#define	ROM_PIN_D2		3
+#define	ROM_PIN_D3		4
+#define	ROM_PIN_D4		5
+#define	ROM_PIN_D5		6
+#define	ROM_PIN_D6		7
+#define	ROM_PIN_D7		8
+#define	ROM_PIN_A0		9
+#define	ROM_PIN_A1		10
+#define	ROM_PIN_A2		11
+#define	ROM_PIN_A3		12
+
+#define	ROM_PIN_nWR		16		// Only on 32-pin - A14 is nWR on 28-pin
+#define	ROM_PIN_nOE		17		// Jim on 1MHz
+#define	ROM_PIN_nCE		19		// RnW on 1MHz
+
 
 
 

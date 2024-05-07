@@ -10,7 +10,7 @@ else()
 endif()
 
 
-set(PICO_BOARD_HEADER_DIRS ${CMAKE_CURRENT_SOURCE_DIR}/boards)
+set(PICO_BOARD_HEADER_DIRS ${CMAKE_CURRENT_SOURCE_DIR}/../boards)
 
 # Pull in SDK (must be before project)
 include($ENV{PICO_SDK_PATH}/external/pico_sdk_import.cmake)
@@ -18,6 +18,9 @@ include($ENV{PICO_SDK_PATH}/external/pico_sdk_import.cmake)
 project(pico_eco C CXX ASM)
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_CXX_STANDARD 17)
+
+add_compile_options(-Wall)
+
 
 # Initialize the SDK
 pico_sdk_init()
