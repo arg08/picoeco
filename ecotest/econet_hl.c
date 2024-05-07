@@ -142,6 +142,10 @@ static void __not_in_flash_func(cb_rx_scout)(const uint8_t *data, unsigned len, 
 				if (rxcbs[i].buflen < dlen) dlen = rxcbs[i].buflen;
 				memcpy(rxcbs[i].buf, data + 6, dlen);
 				rxcbs[i].buflen = dlen;
+				// Mark the RxCB done - for non-bdcast, this comes later
+				rxcbs[i].ctrl = rx_ctrl;
+				rxcbs[i].port = rx_port;
+				rxcbs[i].stn_net = rx_stn_net;
 			}
 			else
 			{
@@ -312,7 +316,11 @@ static void start_next_tx(void)
 	uint32_t delta, max, now = time_us_32();
 
 	// XXXX disable interrupts?
-	if (active_txcb) return;
+	if (active_txcb)
+	{
+		printf("start_next_tx() when active\n");
+		return;
+	}
 
 	// Find the TxCB out of those active with the earliest retry time
 	for (found = -1, max = 0, i = 0; i <= max_txcb_no; i++)
@@ -361,6 +369,12 @@ static void start_next_tx(void)
 			if (imm_op_2way[active_txcb->u.ctrl - IMM_MIN])
 				len |= 0x80000000;
 		}
+		else if ((active_txcb->u.stn_net & 0xff) == 0xff)
+		{
+			// Broadcast.  Fixed size, user's data goes in the scout.
+			memcpy(tx_scout + 6, active_txcb->u.buf, 8);
+			len = 6 + 8;
+		}
 		else len = 6;
 
 		// Shouldn't ever fail since we know whether there's a tx active.
@@ -369,6 +383,7 @@ static void start_next_tx(void)
 			active_txcb = NULL;
 			printf("Tx start failed\n");
 		}
+		else printf("Tx start OK\n");
 	}
 }
 
@@ -438,7 +453,8 @@ int econet_tx_poll(int tx_handle)
 
 	// Here if finished - result is in the ctrl code
 	if (our_txcb->u.ctrl == 0) result = 1;
-	else result = ECO_NOT_LISTEN;	// XXXX Spot not lis vs net error
+	else if (our_txcb->u.ctrl == ERR_NOTLIS) result = ECO_NOT_LISTEN;	
+	else result = ECO_NET_ERR;
 
 	// Mark TxCB no longer in use.
 	our_txcb->u.buf = NULL;

@@ -516,6 +516,7 @@ static inline void __not_in_flash_func(event_tf)(PIO pio, EcoWkSpace *ws)
 			{
 				ws->pend_len &= 0x7fffffff;
 				ws->frame_no = 2;
+// XXXX in this case, need to get the reply buffer
 			}
 			else ws->frame_no = 0;
 			ws->bleft = ws->pend_len - 4;
@@ -553,8 +554,14 @@ static inline void __not_in_flash_func(event_tf)(PIO pio, EcoWkSpace *ws)
 		// Other end should then send us a flag (RF).
 		// Sit in ST_RXTURN waiting for that to happen.
 		// Unless this was the last flag, in which case just wait for idle.
-		if (ws->frame_no != 3) ws->state = ST_RXTURN;
-		else ws->state = ST_SKIPIDLE;
+		if (ws->frame_no == 3) ws->state = ST_SKIPIDLE;
+		else if ((ws->frame_no == 0) && ((ws->current_addrs & 0xff) == 0xff))
+		{
+			// Broadcast - we're now done
+			ws->state = ST_SKIPIDLE;
+			ws->callb.tx_done(0);
+		}
+		else ws->state = ST_RXTURN;
 	}
 	// TF event in ST_RXTURN means we were too late changing the PIO wrap;
 	// could treat as an error, but more useful to ignore and hope the
@@ -676,6 +683,13 @@ static inline void __not_in_flash_func(event_i)(PIO pio, EcoWkSpace *ws)
 		// We've aborted while receiving a frame (could be overall Tx or Rx)
 		// so may need to notify the higher layer
 		signal_rx_fail(ws, ERR_IDLE);
+	}
+	else if (ws->state == ST_RXTURN)
+	{
+		// NB. frame_no not yet incremented, so it tells us which frame
+		// has just been transmitted and failed to get the response
+		if (ws->frame_no == 0) ws->callb.tx_done(ERR_NOTLIS);
+		else if (ws->frame_no == 2) ws->callb.tx_done(ERR_IDLE);
 	}
 	else if (ws->state == ST_TXWAIT)
 	{

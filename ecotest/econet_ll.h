@@ -21,7 +21,7 @@ typedef struct
 #define	ERR_CRC			2	// Frame received with CRC error
 #define	ERR_OFLO		3	// Frame is too big for buffer
 #define	ERR_IDLE		4	// Line went idle during receive
-						// XXX should split to not-listening/net-error
+#define	ERR_NOTLIS		6	// Special case of ERR_IDLE just after scout
 #define	ERR_LATE		5	// Idle line due to late interrupt response
 
 
