@@ -54,6 +54,24 @@ void board_enable_terminator(bool en)
 	gpio_put(ECONET_PIN_TERM_EN, en);
 #elif defined(BOARD_CTRL_BIT_TERM_EN)
 	set_ctrl_bit(BOARD_CTRL_BIT_TERM_EN, en);
+#elif defined(ECONET_PIN_TERM_PUMP)
+	// This board has terminator that needs a PWM pump to turn it on.
+	if (en)
+	{
+		pwm_config cfg = pwm_get_default_config();
+		unsigned period = clock_get_hz(clk_sys) / 100000;
+		pwm_config_set_wrap(&cfg, period);
+		pwm_init(pwm_gpio_to_slice_num(ECONET_PIN_TERM_PUMP), &cfg, true);
+		gpio_set_function(ECONET_PIN_TERM_PUMP, GPIO_FUNC_PWM);
+		pwm_set_gpio_level(ECONET_PIN_TERM_PUMP, period/2);
+	}
+	else
+	{
+		// Turn it back into a GPIO and drive low to disable
+		gpio_init(ECONET_PIN_TERM_PUMP);
+		gpio_put(ECONET_PIN_TERM_PUMP, 0);
+		gpio_set_dir(ECONET_PIN_TERM_PUMP, true);
+	}
 #else
 #error term enable not defined
 #endif
@@ -65,6 +83,10 @@ bool board_terminator_enabled(void)
 	return gpio_get(ECONET_PIN_TERM_EN);
 #elif defined(BOARD_CTRL_BIT_TERM_EN)
 	return ((ctrl_reg_copy & BOARD_CTRL_BIT_TERM_EN) != 0);
+#elif defined(ECONET_PIN_TERM_PUMP)
+	// This board has terminator that needs a PWM pump to turn it on.
+	// If pin is in PWM mode, assume it's on, else off.
+	return (gpio_get_function(ECONET_PIN_TERM_PUMP) == GPIO_FUNC_PWM);
 #else
 	return false;
 #endif
@@ -164,8 +186,16 @@ void board_specific_init()
 #endif
 
 #if defined(ECONET_PIN_CLK_EN)
-	gpio_init_mask( (1<<ECONET_PIN_CLK_EN) | (1<<ECONET_PIN_TERM_EN));
+	gpio_init(ECONET_PIN_CLK_EN);
 	gpio_set_dir(ECONET_PIN_CLK_EN, GPIO_OUT);
+#endif
+#if defined(ECONET_PIN_TERM_EN)
+	gpio_init(ECONET_PIN_TERM_EN);
 	gpio_set_dir(ECONET_PIN_TERM_EN, GPIO_OUT);
+#endif
+#if defined(ECONET_PIN_TERM_PUMP)
+	// Will be used as PWM if the terminator is turned on.
+	gpio_init(ECONET_PIN_TERM_PUMP);
+	gpio_set_dir(ECONET_PIN_TERM_PUMP, GPIO_OUT);
 #endif
 }

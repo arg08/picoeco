@@ -48,6 +48,17 @@ add_executable(${MAIN_EXECUTABLE}
 	fs.c
 	econet_hl.c
 	econet_ll.c)
+elseif(PICO_BOARD STREQUAL "bus1mhz_rp2040")
+set(MAIN_EXECUTABLE bus1mhz_rp2040)
+add_executable(${MAIN_EXECUTABLE}
+	ecotest.c
+	board_specific.c
+	bus1mhz.c
+	crc16.c
+	timers.c
+	fs.c
+	econet_hl.c
+	econet_ll.c)
 else()
 	message(ERROR "No executable for this board in CMakeLists.txt")
 endif()
@@ -58,6 +69,10 @@ pico_generate_pio_header(${MAIN_EXECUTABLE} ${CMAKE_CURRENT_LIST_DIR}/econet.pio
 # Only 1MHz boards need this
 if(PICO_BOARD STREQUAL "bus1mhz_proto")
 pico_generate_pio_header(${MAIN_EXECUTABLE} ${CMAKE_CURRENT_LIST_DIR}/bus1mhzproto.pio)
+endif()
+
+if(PICO_BOARD STREQUAL "bus1mhz_rp2040")
+pico_generate_pio_header(${MAIN_EXECUTABLE} ${CMAKE_CURRENT_LIST_DIR}/bus1mhz_muxed.pio)
 endif()
 
 # Get the UF2 file built
@@ -73,6 +88,7 @@ pico_enable_stdio_uart(${MAIN_EXECUTABLE} 1)
 target_link_libraries(${MAIN_EXECUTABLE}
         pico_stdlib
         hardware_pio
+        hardware_uart
 		hardware_pwm
 		hardware_dma
 		hardware_spi

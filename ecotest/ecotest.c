@@ -146,6 +146,13 @@ int main()
 {
 	char *cmdptr;
 	board_specific_init();
+
+#if 0
+// Temporary kludge for bus1mhz_rp2040 where the PICO_DEFAULT_UART in
+// the board file doesn't seem to be respected by the stdio library
+	stdio_uart_init_full(uart1, 2000000, PICO_DEFAULT_UART_TX_PIN, PICO_DEFAULT_UART_RX_PIN);
+#endif
+
 	printf("Ecotest\n");
 	if (watchdog_caused_reboot()) printf("Watchdog reboot\n");
 

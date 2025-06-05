@@ -11,7 +11,11 @@
 #include "hardware/dma.h"
 
 // Our assembled program:
+#ifdef B1M_PIN_AD_MUX
+#include "bus1mhz_muxed.pio.h"
+#else
 #include "bus1mhzproto.pio.h"
+#endif
 
 // Bank of registers for read purposes, accessed by DMA.
 // Has to be aligned to its own size.
@@ -37,12 +41,16 @@ uint8_t eco_regs[8] __attribute__ ((aligned(8))) =
 				on difficult ones (subject to the demands of Econet
 				if running on the same CPU).
 
+
 				Value in the FIFO has 19 bits of data:
-					bit 18: 1=read cycle, 0=write cycle
-					bit 17: nFred (can ignore as it's the complement of nJim)
-					bit 16: nJim (can treat as an extra address bit)
-					bits 8..15 Address bits A[0..7]
-					bits 0..7 Data bits, only useful on writes.
+					bits 31..24 Data bits, only useful on writes.
+					bit 10: 1=read cycle, 0=write cycle
+					bit 9: nFred (can ignore as it's the complement of nJim)
+					bit 8: nJim (can treat as an extra address bit)
+					bits 0..7 Address bits A[0..7]
+
+				NB. prototype had different layout:
+					bit 18: RnW, Bit17 nFred, Bit16 nJim, Addr[7:0], Data[7:0]
 */
 
 static void __not_in_flash_func(pio_irq0_handler)(void)
@@ -105,22 +113,60 @@ static void setup_dma(unsigned sm)
 	dma_channel_set_config(dma1, &cfg, true);
 }
 
+/*
+	Purpose:	Handle interrupt reporting that BBC has been reset
+	Returns:	Nothing, IRQ acknowledged
+	Notes:
+*/
+
+#ifdef B1M_PIN_BBC_nRST
+void bbc_nrst_handler(void)
+{
+	// This is the only enabled GPIO interrupt at present, but be prepared
+	// for more since there's only one shared vector for all pins.
+	if (gpio_get_irq_event_mask(B1M_PIN_BBC_nRST))
+	{
+		// We only have falling edge enabled, so that must be the one to ack
+		gpio_acknowledge_irq(B1M_PIN_BBC_nRST, GPIO_IRQ_EDGE_FALL);
+		printf("BBC nRST!\n");
+	}
+	else printf("Wild IRQ\n");
+}
+#endif
+
 void bus1mhz_init(void)
 {
 	PIO pio = BUS1MHZ_PIO;
-	unsigned offset;
+	unsigned pin_no, offset;
 
-	// Most of the pins are inputs; just the databus can be outputs
-	// and so need to be pinmuxed to the PIO.
-	for (offset = 0; offset < 8; offset++)
-		pio_gpio_init(pio, B1M_PIN_D0 + offset);
-
-	// Set all the pins to have pullups.
+	// Enble all the pins as inputs and turn on pullups.
 	// This is mainly so that the board can be used with the 1MHz bus
 	// unplugged - high is an idle condition, and is also the natural
 	// state for TTL inputs (pulling low would not work).
-	for (offset = 0; offset < B1M_PIN_COUNT; offset++)
-		gpio_pull_up(B1M_PIN_BASE + offset);
+	for (pin_no = B1M_PIN_BASE; pin_no < (B1M_PIN_BASE + B1M_PIN_COUNT);
+		pin_no++)
+	{
+		gpio_pull_up(pin_no);
+
+		pio_gpio_init(pio, pin_no);
+	}
+	// If wired to the CPU, NMI/IRQ/nRST are GPIOs
+#ifdef B1M_PIN_NMI
+	gpio_init(B1M_PIN_NMI);
+	gpio_put(B1M_PIN_NMI, 0);	// Currently an input, ready to drive low
+#endif
+#ifdef B1M_PIN_IRQ
+	gpio_init(B1M_PIN_IRQ);
+	gpio_put(B1M_PIN_IRQ, 0);	// Currently an input, ready to drive low
+#endif
+#ifdef B1M_PIN_BBC_nRST
+	gpio_init(B1M_PIN_BBC_nRST);
+	gpio_pull_up(B1M_PIN_BBC_nRST);	// In case BBC not connected
+	gpio_add_raw_irq_handler(B1M_PIN_BBC_nRST, bbc_nrst_handler);
+	gpio_set_irq_enabled(B1M_PIN_BBC_nRST, GPIO_IRQ_EDGE_FALL, true);
+	irq_set_enabled(IO_IRQ_BANK0, true);
+#endif
+
 
 	// One instance of the main program - this gives us non-time-critical
 	// notification of all 1MHz bus events down the Rx FIFO.
