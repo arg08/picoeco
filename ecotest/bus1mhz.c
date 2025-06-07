@@ -20,7 +20,14 @@
 // Bank of registers for read purposes, accessed by DMA.
 // Has to be aligned to its own size.
 uint8_t eco_regs[8] __attribute__ ((aligned(8))) = 
-{ 0xaa, 0x55, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88};
+{	0x00,	// SR1
+	0x24,	// SR2 - clk det in bit 5, idle in bit 2
+	0x33,	// RDR
+	0x44,	// RDR duplicate
+	0x55,	// Int enable
+	123,	// Int disable/statid
+	0x77,
+	0x88};
 
 
 /*
