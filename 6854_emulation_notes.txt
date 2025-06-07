@@ -1,0 +1,283 @@
+
+Not implemented (no hardware):
+ - RDSR/TDSR bits in CR1: these relate to DMA operation via
+   two  pins on the 6854 that are never connected on any Acorn
+   hardware, hence these control bits are ignored.
+
+ - Loop mode: this again doesn't really work without external
+   hardware.  So CR3 bit LOOP is expected to be 0 at all times.
+
+ - CR4 LOC/DTR bit (only DTR usage meaningful since we don't support
+  loop mode).  DTR pin not connected on any Acorn hardware,
+  so although supported in the sense that software can set this bit
+  if it wants to, there's no hardware to expose that state.
+  Could implement if we ever did a drop-in 6854 replacement.
+
+
+Not implemented (seems unlikely to be needed):
+ - Reading Rx data from register 3 rather than register 2.
+   The register mapping at address 3 is redundant and there's no
+   logical reason for anyone to use it, so for efficiency this
+   emulation doesn't duplicate the register 2 value there.
+   It could be done if any software is discovered that actually uses this.
+   The corresponding registers for Tx data _do_ have meaning
+   and are implemented.
+
+ - LCF, AEX, CEX in CR3.  Econet doesn't use these frame formats,
+   though there would be no problem implementing them if needed.
+   Currently expected to be zero at all times.
+
+ - Loopback test (GAP/TST bit in CR3).  Could be implemented,
+   but no current software appears to use it.
+   Currently expected to be zero at all times.
+
+ - FF bit in CR4 (controls single/double flag between
+   successive frames).  Since Econet doesn't ever transmit
+   back-to-back frames this setting isn't significant.
+   Ignored in current implementation.
+
+ - Simultaneous Tx and Rx.  This isn't very useful for Econet but
+   theoretically the 6854 hardware could do it.  Could be done at
+   the huge expense of using both PIO units. Fortunately,
+   econet software seems to set only one of TxRS or RxRS in CR1
+   most of the time (ie. either transmit or receive disabled).
+   Acorn code leaves the receiver enabled briefly while doing
+   line turnaround, just until it has checked the FV flag.
+   Emulation swtitches from Rx to Tx on setting RTS in CR2,
+   then back to Rx on transmitting final flag if RTS clear at that
+   point, or (abrubptly) if Tx disabled.
+
+ - CR4 ABT and ABTex (abort Tx) bits.  Econet software seems
+   to do abort by simply disabling the transmitter.
+
+ - TxLAST in CR2 - not used by BBC but might implement anyhow
+   as it's easy.  *** Actually, BBC does use this.
+
+
+Not implemented (tricky if they were needed):
+ - Word length select (Tx/Rx WLS bits in CR4).  Econet is
+   always using 8-bit words, so these bits are all expected
+   to be set at all times.
+
+ - NRZI mode (NRZI bit in CR4).  Not used on Econet, tricky
+   to fit in PIO program.
+
+ - Flag/Mark bit in CR2.  BBC seems to set it FLAG always (and
+   achieves idles by disabling the transmitter), even though
+   a comment in 'TXAK' thinks it is setting it for MARK.
+   Emulated behaviour generates idles/flags on the line as
+   required by Econet and ignoring this bit.
+
+BBC DNFS behaviour
+------------------
+
+DNFS detects hardware by reading FEA0 (SR1) ANDing with &EA and if nonzero
+not detected; reads FEA1 (SR2) AND with &DB and if nonzero not detected.
+So in SR1 CTS, RDA and LOOP can be nonzero but IRQ, TDRA, TxU, FlagDet,
+and S2req must be clear; in SR2 DCD and RxIdle can be set but
+RDA, OVRun, ERR, RxAbort, FrameValid, AddressPresent must be clear.
+
+NB. this detect code is in source file NET01 and uses literal addresses,
+not using the defines from the LOWL00.  Several places, no clock msg and
+station number banner likewise literal addresses.
+
+CReg1
+ LDAIM &A2  ;+TXRS -RXRS +FRDSC -TDSR -RDSR -TIE +RIE CR2 ; Frame discontinue
+ LDAIM ZERO  ;-TXRST -RXRST -RXDISC -TDSR -RDSR -TIE -RIE SCR2 ; Claim line*
+ LDAIM &44  ;-TXRST +RXRST -RXDISC -TDSR -RDSR +TIE -RIE SCR2 ; End Rx??
+ LDAIM &82  ;+TXRST -RXRST -RXDISC -TDSR -RDSR -RDSR -TIE +RIE SCR2
+
+ LDAIM &C1  ;+TXRS +RXRS -FRDIS -TDSR -RDSR -TIE -RIE SELCR3 ; first init
+ then back to &82
+
+
+
+CReg2
+ LDAIM &84  ;+RTS -CTXST -CRXST -TXLAST TDRA FLAG 1-BYT -PSE ; Switch to 1byte
+ LDAIM &A7  ;+RTS -CTXST +CRXST -TLAST TDRA FLAG 2-BYT +PSE ; Enable Tx
+ LDAIM &3F ;-RTS -CTXST +CRXST +TXLST FC FLAG 2-BYT +PSE ; End packet
+ LDAIM &67 ;-RTS +CTXS +CRXS -TXL TDRA FLAG 2BYT +PSE ; Clear status
+ LDAIM SEVEN ;-RTS -CTXS -CRXS -TXLA TDRA FLAG 2BYT +PSE ; Turn off Tx jammed
+
+ ; at entrypoint CLAIM (BNE CLAIM in 2 places) with Y already loaded
+ LDYIM &E7  ;+RTS +CTXS +CRXS -TXLA TDRA FLAG 2BYT +PSE
+ STY CReg2  ;+RTS +CTXS +CRXS -TXLA TDRA FLAG 2BYT +PSE
+
+ At first init, &67
+ Note that bit 2 (Flag/Mark idle) is always set.
+ TXLST is used for end of packet - write to the alternat TxD register NOT used!
+
+CReg3
+  Zero at first init "-DTR"
+
+CReg4
+ LDAIM &1E  ;NRZ -ABTEX -ABT 8TX 8RX 8RX F	; First init
+
+CR3 and CR4 are never written except at first init.
+
+Sreg1
+  Checks TRDA (but error if not) when starting to tx
+  Checks IRQ for tail optimisation
+
+
+Sreg2
+  Checks for AP (but error if not)
+  Checks for RDA (but error if not)
+  Elsewhere checks for RDA and if not present looks for end of packet
+  Checks FV bit for valid CRC
+  Checks DCD (for no clock) early in Tx
+  Checks RXIDLE prior to transmitting
+
+Detailed notes
+--------------
+
+CR1
+  AC(B0) - static bit, affects writes to CR2(becomes CR3) and TxLast(CR4)
+  RIE(B1) - Enable Rx interrupts - bits ??? in SR2
+  TIE(B2) - Enable Tx interrupts - bits ??? in SR2
+  RDSR(B3),TDSR(B4) - not implemented (DMA feature)
+  RxDISC(B5) - scraps reception of rest of frame until next flag
+	 (but NB. in principle could just be scrapping FIFO bytes and
+	 the next frame might have started; in practice that doesn't
+	 happen on Econet as RxDISC used after address byte and there's
+	 always 16 bits of idle before the next frame we want in that case.
+  RxRST(B6) - disables receiver.  Largely ignored here.
+  TxRST(B7) - disables transmitter (used to abort Tx).
+
+CR2
+  PSE(B0) affects value read from CR2
+  1/2byte(B1) affects read-data-avail status (Tx also in theory)
+  Flag/Mark(B2) - Ignored
+  FC/TDRA (B3) affects SR1 B6.  BBC uses both settings
+  TxLast (B4) Not used by BBC (it writes the alternate data reg)
+  ClearRx (B5) Clears Rx bits in SR2 (not AP or RDA)
+			   One-shot action: doesn't need to feed into calculation
+			   of IRQ etc.
+  ClearTx (B6) Clears Tx bits in SR2 (not TDRA). 1-shot.
+  RTS (B7) Starts Tx (assuming Tx enabled - error if not)
+
+CR3
+ Nothing in here is implemented.  B7 (DTR) can be written freely.
+ Expect zero in all other bits.
+ B6 (flag det status enable) could be implemented if reqd.
+
+CR4
+  Nothing in here is implemented.  Could police acceptable values:
+	0001111x
+
+
+SR1
+  RDA(B1) - NB. affected by 1/2byte mode in CR2
+  S2RQ(B2) - Set if any bits in SR2 apart from RDA are set
+  LOOP(B3) - Always zero as we don't support loop mode.
+  FD(B3) only if enabled via CR3 (which we don't support)
+	Cleared by ClearRx or RxRST
+  CTS(B4) - Latching '1' if collision detect goes off during Tx
+	Inhibits TDRA when set.
+	Cleared by ClearTx in CR2 or TxRST
+  TxU(B5) - set if underrun occurs.  Cleared by ClrTx or TxRST
+  TDRA/FC(B6) - controlled by CR2B3.  In TDRA mode, affected by 1/2byte mode.
+	and it's a dynamic bit, also suppressed by colission.
+	In FC mode, set by flag at end of Tx with RTS still on or abort
+	(but we don't support abort), cleared by TxRST or ClrTx.
+  IRQ(B7) - directly reflects state on IRQ pin.
+
+SR2
+  AP(B0) - indicates first byte of packet ready to read.
+		   Cleared by reading it or RxRst, NOT by ClrRx.
+  FV(B1) - Indicates CRC passed on final bytes. Cleared by ClrRx or RxRst
+		   Also inhibits further Rx while set.
+  RI(B2) - Indicates idle received.  Cleared by ClrRx unless idle still
+		   present.  Suppressed by RxRst???
+  RxABT(B3) - Indicates idle in mid pkt.  Latching, cleared ClrRx or RxRST
+  ERR(B4) - Triggered by failed CRC.  Behaviour otherwise same as FV.
+  DCD(B5) - Rising edge on nDCD (clock fail) causes IRQ.
+			ClrRx clears the interrupt but the bit itself then
+			follows the signal (ie. clock coming back will clear the bit,
+			but not generate an IRQ, and the bit won't clear unless
+			it had previously been RxRSTed).
+  OVRN(B6) Rx overflow.  Cleared RxRst or ClrRx.  We don't do this??
+  RDA(B7) Copy of RDA in SR1.  Affected by 1/2 byte mode.
+		  Also affected by prioritised status mode: no RDA even though
+		  byte is actually available when it's AP or FV or ERR.
+		  in 2Byte mode, goes to 0 after reading the 1st byte.
+
+Everything in SR2 is Rx related and where clearable is cleared by ClrRx.
+(this includes DCD which might be thought to affect Tx too).
+FD in SR1 is also Rx.
+CTS and TxU are Tx-related (cleared by ClrTx)
+All of these ClrRx/ClrTx bits only clear if the CPU has read them.
+
+
+IRQ: On 6502 systems, NMI is edge-triggered so not urgent to turn it
+off when disabled, but mustn't glitch (by turning it off in response to
+one source going away when it should still be on due to another).
+On level-triggered systems, more urgent to take it away (eg. in
+response to reading data reg) and can afford to put it back later.
+
+Interrupts are loosely connected with SR2 status, but not really the
+same as several interrupts latch until cleared, with the bit in SR2
+being the OR of the latched status and live value; then there's
+interrupts due to TDRA/RDA which are live value and not latched.
+
+DCD, CTS, RxABT, RxIdle are all OR-ed latched and live values.
+AP is attached to the current  byte in the Rx FIFO.
+
+FV/ERR in 2-byte mode get set on the penultimte byte, and in either
+case remain set until cleared (or RxRST) - in theory, a following
+packet is queued (not revealed as RXDA) until the FV cleared.
+
+CTS inhibits TDRA, but does not stop the transmitter transmitting
+in the real implementation; in our case, we abort Tx on collision.
+
+Interrupt caused by DCD, RxIdle, RxABT, RxDA, CTS
+TDRA/FC must generate interrupt but isn't documented as doing so.
+TxU isn't defined to generate interrupt (since by definition
+TDRA will be causing one already).
+
+
+Could have a whole 32-bit value (containing SR1,SR2, Rx data)
+ready to drop in after a read?
+
+
+Minimal ISR code:
+
+Read SR1
+	last_sr1 = sr1 & (resettable bits)
+
+Read SR2
+	last_sr2 = sr2 & (resettable bits)
+
+Read FIFO
+	fifo = next_rx   // next_rx is a 32-bit value with valid flag in high bit
+	turn off BBC IRQ
+	if next_rx = 0
+	next_rx = 0
+	cause irq		// Trigger lower priority IRQ which may update next_rx etc
+	clear TDRE
+XXXX Not right, need to handle 1byte/2byte modes.
+IRQ needs to go off on 1st read regardless - 1st byte of 2byte mode, or only 1
+Likewise need to clear RDA in both status registers
+Can safely copy 2nd byte into register even in 1byte mode as the host
+isn't going to read again (or can't expect useful data if it does),
+but need a way to notify the foreground of how many bytes have been taken.
+
+Write CR1
+  Xxx handle interrupt enables, tx/rx resets.
+  cause irq (Rxdisc can be left to lower pri handler?)
+
+Write CR2/3
+ if (CR1_val & 1) CR3_val = data
+ else
+   handle ClrRx/ClrTx
+   cause irq (RTS handled later)
+
+Write TxD
+  XXX
+	
+
+Write Txlast/CR4
+  if (CR1_val & 1) CR4_val = data
+  else
+	tx_last_flag = true;
+	goto Write TxD
