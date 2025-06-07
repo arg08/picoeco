@@ -84,7 +84,14 @@
 ; For line turnaround (ie. to Tx a frame immediately having received
 ; a scout or Ack, where the responding flag must go out before the
 ; line becomes idle), the code is arranged so that the loop back
-
+; to the main Rx code after a flag is received is made using the
+; .wrap mechanism.  When a line turnaround is desired, the .wrap
+; is disabled and control falls through from the flag Rx into the
+; Tx flag code.  For the transition in the other direction, the
+; .wrap is put back and at the point when the Tx code would be
+; about to start generating another flag it wraps back into
+; the Rx code.
+;
 
 ; Forced entry at tx_zero_bit for ARM to force us from Rx into Tx
 ; on a line turnaround - it will transmit a zero bit (possibly only
@@ -101,14 +108,6 @@
 ; but either way the flag is correctly formed and in a place where
 ; the BBC can see it.
 
-; to the main Rx code after a flag is received is made using the
-; .wrap mechanism.  When a line turnaround is desired, the .wrap
-; is disabled and control falls through from the flag Rx into the
-; Tx flag code.  For the transition in the other direction, the
-; .wrap is put back and at the point when the Tx code would be
-; about to start generating another flag it wraps back into
-; the Rx code.
-;
 ; For the case of starting transmit of our own packet, software takes
 ; the idle line interrupt and forces a jump to txflag:.  The PIO
 ; starts generating the flag, and in the meantime software loads
