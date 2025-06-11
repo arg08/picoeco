@@ -157,13 +157,17 @@ int main()
 	if (watchdog_caused_reboot()) printf("Watchdog reboot\n");
 
 
-	econet_hl_init(&eco_hw);
-	watcher_init(&eco_hw);
 #if HAS_1MHZ_BUS
 	bus1mhz_init();
 #endif
-
+#if EMULATE_6854
+	emu6854_init(&eco_hw);
+#else
+	econet_hl_init(&eco_hw);
 	fs_init();
+#endif
+	watcher_init(&eco_hw);
+
 	printf(PROMPT);
 	cmdptr = cmdline;
 	for (;;)
@@ -194,7 +198,9 @@ int main()
 			}
 			else putchar(7);
 		}
+#if !EMULATE_6854
 		// Our little fake Econet FS
 		poll_fs();
+#endif
 	}
 }

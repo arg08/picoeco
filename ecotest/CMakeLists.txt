@@ -59,6 +59,17 @@ add_executable(${MAIN_EXECUTABLE}
 	fs.c
 	econet_hl.c
 	econet_ll.c)
+add_executable(emu6854
+	ecotest.c
+	board_specific.c
+	bus1mhz.c
+	crc16.c
+	timers.c
+	emu6854.c
+)
+target_compile_definitions(emu6854 PRIVATE
+	EMULATE_6854=1
+)
 else()
 	message(ERROR "No executable for this board in CMakeLists.txt")
 endif()
@@ -73,6 +84,10 @@ endif()
 
 if(PICO_BOARD STREQUAL "bus1mhz_rp2040")
 pico_generate_pio_header(${MAIN_EXECUTABLE} ${CMAKE_CURRENT_LIST_DIR}/bus1mhz_muxed.pio)
+pico_generate_pio_header(emu6854 ${CMAKE_CURRENT_LIST_DIR}/bus1mhz_muxed.pio)
+pico_add_extra_outputs(emu6854)
+pico_enable_stdio_usb(emu6854 1)
+pico_enable_stdio_uart(emu6854 1)
 endif()
 
 # Get the UF2 file built
@@ -86,6 +101,16 @@ pico_enable_stdio_uart(${MAIN_EXECUTABLE} 1)
 # Not all executables need all these libararies, but there's no difference
 # to the executable by including them unconditionally
 target_link_libraries(${MAIN_EXECUTABLE}
+        pico_stdlib
+        hardware_pio
+        hardware_uart
+		hardware_pwm
+		hardware_dma
+		hardware_spi
+        )
+
+
+target_link_libraries(emu6854
         pico_stdlib
         hardware_pio
         hardware_uart
