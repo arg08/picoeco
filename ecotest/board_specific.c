@@ -12,6 +12,7 @@
 #include <hardware/spi.h>
 #include "hardware/watchdog.h"
 
+#include "board_specific.h"
 #include "econet_ll.h"
 #include "econet_hl.h"
 

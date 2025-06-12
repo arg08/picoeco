@@ -70,6 +70,15 @@ add_executable(emu6854
 target_compile_definitions(emu6854 PRIVATE
 	EMULATE_6854=1
 )
+
+target_link_libraries(emu6854
+        pico_stdlib
+        hardware_pio
+        hardware_uart
+		hardware_pwm
+		hardware_dma
+		hardware_spi
+        )
 else()
 	message(ERROR "No executable for this board in CMakeLists.txt")
 endif()
@@ -108,15 +117,4 @@ target_link_libraries(${MAIN_EXECUTABLE}
 		hardware_dma
 		hardware_spi
         )
-
-
-target_link_libraries(emu6854
-        pico_stdlib
-        hardware_pio
-        hardware_uart
-		hardware_pwm
-		hardware_dma
-		hardware_spi
-        )
-
 

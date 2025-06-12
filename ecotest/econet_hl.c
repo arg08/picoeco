@@ -7,6 +7,7 @@
 #include <stdlib.h>
 #include "pico/stdlib.h"
 
+#include "board_specific.h"
 #include "econet_ll.h"
 #include "econet_hl.h"
 

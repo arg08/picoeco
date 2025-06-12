@@ -11,8 +11,8 @@
 #include "hardware/structs/iobank0.h"
 
 // Prototypes for this module
-#include "econet_ll.h"
 #include "board_specific.h"
+#include "econet_ll.h"
 
 typedef struct workspace_1hz
 {

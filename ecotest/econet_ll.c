@@ -12,6 +12,9 @@
 // Enables sanity checking for conditions that should not be possible.
 #define	SANITY_CHECKS	1
 
+// Access to hardware
+#include "board_specific.h"
+
 // Prototypes for this module
 #include "econet_ll.h"
 

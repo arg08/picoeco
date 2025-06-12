@@ -12,6 +12,9 @@
 // Enables sanity checking for conditions that should not be possible.
 #define	SANITY_CHECKS	1
 
+// Access to hardware
+#include "board_specific.h"
+
 // Prototypes for this module
 #include "emu6854.h"
 
@@ -67,13 +70,11 @@ static void reset_interface(PIO pio, Em6854WkSpace *ws)
 	pio_sm_clear_fifos(pio, SM_NO);
 	pio_sm_exec(pio, SM_NO, pio_encode_jmp(econet_hdlc_offset_rxentrypoint));
 	pio_sm_set_wrap(pio, SM_NO, econet_hdlc_wrap_target, econet_hdlc_wrap);
-	ws->state = ST_SKIPIDLE;
 	// Disable Tx interrupts
 	hw_clear_bits(&pio->inte0, (PIO_IRQ0_INTE_SM0_TXNFULL_BITS << SM_NO));
     pio_sm_set_enabled(pio, SM_NO, true);
 }
 
-	hw_set_bits(&pio->inte0, (PIO_IRQ0_INTE_SM0_TXNFULL_BITS << SM_NO));
 
 /*
 	Purpose:	Handle received flag event (RF)
@@ -165,7 +166,6 @@ static inline void __not_in_flash_func(tx_fifo_int)(PIO pio, Em6854WkSpace *ws)
 	// data to load.
 	{
 //		ws->crc = crc16_add_byte(ws->crc, b);
-		}
 	}
 		// This is the last byte so disable interrupts.
 		hw_clear_bits(&pio->inte0,
@@ -224,24 +224,12 @@ static void __not_in_flash_func(pio_irq0_handler)(void)
 // -----------------------------------------------------------------
 
 /*
-	Purpose:	Initialise one instance of Econet hardware.
-	Returns:	Instance handle to pass back to other econet_ll_xxx functions
-	Notes: 		Currently only works for a single instance, but
-				some plumbing is there for multiple instances.
-				Second parameter is a callback function, called on
-				each scout frame Rx to ask "is this for us?".
-				If it returns true, the line will be claimed at the end
-				of the scout Rx, false and it's assumed to be a packet
-				for some other station and all input will be skipped
-				until the line goes idle.  Callback is invoked from
-				interrupt handler so should return quickly and
-				only do basic processing (typically just checking
-				the low 16 bits against the local stnid).  There's
-				the opportunity to do more (RxCB scanning) when the
-				whole scout is in and the line claimed.
+	Purpose:	Initialise Econet hardware for 6854 on 1MHz bus emulation.
+	Returns:	Nothing (assumed only one instance of this)
+	Notes: 		
 */
 
-void *emu6854_init(const EcoHWConfig *hw)
+void emu6854_init(const EcoHWConfig *hw)
 {
 	pio_sm_config cfg = econet_hdlc_program_get_default_config(0);
 	PIO pio = hw->pio_no ? pio1 : pio0;

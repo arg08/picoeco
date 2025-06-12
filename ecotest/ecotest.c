@@ -13,6 +13,7 @@
 #include "hardware/watchdog.h"
 
 #include "board_specific.h"
+#include "emu6854.h"
 #include "econet_ll.h"
 #include "econet_hl.h"
 #if HAS_1MHZ_BUS

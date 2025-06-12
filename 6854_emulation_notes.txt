@@ -53,6 +53,10 @@ Not implemented (seems unlikely to be needed):
  - TxLAST in CR2 - not used by BBC but might implement anyhow
    as it's easy.  *** Actually, BBC does use this.
 
+ - CR3 FDSE bit and corresponding flag bit in SR2 and resulting
+   interrupts.  Could implement all this but the BBC disables it
+   in CR3 at startup and never touches it.
+
 
 Not implemented (tricky if they were needed):
  - Word length select (Tx/Rx WLS bits in CR4).  Econet is
@@ -62,11 +66,32 @@ Not implemented (tricky if they were needed):
  - NRZI mode (NRZI bit in CR4).  Not used on Econet, tricky
    to fit in PIO program.
 
- - Flag/Mark bit in CR2.  BBC seems to set it FLAG always (and
+ - Flag/Mark bit in CR2.  BBC seems to set it to FLAG always (and
    achieves idles by disabling the transmitter), even though
    a comment in 'TXAK' thinks it is setting it for MARK.
    Emulated behaviour generates idles/flags on the line as
    required by Econet and ignoring this bit.
+
+ - RxAbrt in CR2.  Our PIO code doesn't detect aborts, only idles.
+
+Misc notes
+----------
+
+TDRA status is inhibited by CTS.  So in the normal case of transmitting a
+packet onto an idle line, the data can't be loaded into the Tx FIFO
+until the flag starts going out and CTS becomes active.  We could potentially
+set TDRA as soon as RTS is set, though software might not be expecting
+it that soon (presumably normal behaviour is to exit at that point
+and expect an NMI to load the Tx frame data).
+
+ClrRxStat/ClrTxSt in CR2 - these only clear SR bits that have been read
+as '1' by the host.  So we need to keep a record of reads of SR and
+maintain a 'to be cleared' list of bits (and knock them out of to-be-clr
+when they get set again by conditions on the line).
+NB. SR2 are all Rx-related, SR1 has just FlagDetected as an Rx status,
+CTS/TxU are clearable Tx status - TDRA isn't clearable.
+Clearable Rx are DCD/CTS/RxAbrt/RxIdle.
+
 
 BBC DNFS behaviour
 ------------------
@@ -127,6 +152,62 @@ Sreg2
   Checks FV bit for valid CRC
   Checks DCD (for no clock) early in Tx
   Checks RXIDLE prior to transmitting
+
+
+Status bit view
+---------------
+
+There are 16 total status bits across SR1/SR2, but of those:
+
+2 Derivative of other status: IRQ, S2RQ
+
+3 True status (sticky) CTS,  DCD, RxIdle
+6 True status (non-lsticky) TDRA, RDA, AP, FV, TxU, ERR
+4 Static/not implemented: LOOP, RxOv, RxABT, FD
+1 Duplicated: RDA appears in both SR1 and SR2
+
+RxOv does not need to be implemented as we buffer extra bytes rather than
+discarding them.  RxABT is not implemented as our PIO SM can't distinguish
+abort from idle.  FD could be implemented, but it only has effect if
+enabled in CR3 - and the BBC never does.
+
+'sticky' above means they stay set until read even if the underlying
+status goes away,  CTS is sticky in the low direction??
+
+The SR1/SR2 could be done as a lookup table from the true status,
+but there are 10 bits so a 1K-entry, 16-bit values table and really wants
+to be 13-bit because PSE,RIE, TIE all affect the status.
+
+Interface states
+----------------
+Idle.  We think the line is idle in Rx, but the PIO doesn't tell us
+immediately if a 0 bit is received (not until whole flag), so we will
+be late in clearing the RxIdle bit in SR2.
+
+RxStart.  Received at least a flag.  Would set FD on entry to the state if
+implementing that feature.  AP is set when the first byte arrives
+and transition to Rx.
+
+Rx. Received at least the first byte of a frame.
+
+RxEnd.  Received a flag during Rx, setting FV or ERR accordingly.
+Exit back to idle normally via Rx Reset or frame discontinue, or reset
+rx status, but can get Idle from the line.  Getting more flags or data in
+this condition shouldn't happen but stay in the state regardless.
+As a simplification, we return to idle state if idle received even
+though that's not authentic behaviour: in Econet that can only happen
+if the host is super late in turning line round:w
+
+
+WaitIdle - Rx has been terminated and awaiting idle from line.
+
+TxStart - PIO has been set up to start transmitting, typically immediate
+since BBC only requests to transmit if it thinks line is idle.
+Exit to Tx proper (setting TDRA) when PIO sends TxFlag marker to tell us
+it has started transmitting the opening flag.  Receiving flags or data
+in this state is signalled as if a collision - clearing CTS.
+NB. CTS is sticky in the low
+
 
 Detailed notes
 --------------
