@@ -18,7 +18,7 @@ static inline void set_b1m_nmi_active(bool en)
 	gpio_set_dir(B1M_PIN_BBC_NMI, en);
 }
 #else
-static void set_b1m_nmi_active(bool en);
+extern void set_b1m_nmi_active(bool en);
 #endif
 #if defined(B1M_PIN_BBC_IRQ)
 static inline void set_b1m_irq_active(bool en)
@@ -26,7 +26,7 @@ static inline void set_b1m_irq_active(bool en)
 	gpio_set_dir(B1M_PIN_BBC_IRQ, en);
 }
 #else
-static void set_b1m_irq_active(bool en);
+extern void set_b1m_irq_active(bool en);
 #endif
 
 // Econet hardware setup.  Note that we need the whole of a PIO

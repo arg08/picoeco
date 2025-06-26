@@ -53,11 +53,13 @@ static void set_clk_ena(bool en)
 // This is declared as an inline function in board_specific.h
 // if it's a simple GPIO pin, but a function here otherwise.
 #elif defined(BOARD_CONTROL_BIT_BBC_NMI)
-static void set_b1m_nmi_active(bool en)
+void set_b1m_nmi_active(bool en)
 {
 	set_ctrl_bit(BOARD_CTRL_BIT_BBC_NMI, en);
 }
-#else
+#elif defined(B1M_PIN_1MHZE)
+// If this isn't a 1MHz board at all then reasonable not to have an NMI,
+// otherwise something's missing.
 #error NMI enable not defined
 #endif
 
@@ -65,11 +67,11 @@ static void set_b1m_nmi_active(bool en)
 // This is declared as an inline function in board_specific.h
 // if it's a simple GPIO pin, but a function here otherwise.
 #elif defined(BOARD_CONTROL_BIT_BBC_IRQ)
-static void set_b1m_irq_active(bool en)
+void set_b1m_irq_active(bool en)
 {
 	set_ctrl_bit(BOARD_CTRL_BIT_BBC_IRQ, en);
 }
-#else
+#elif defined(B1M_PIN_1MHZE)
 #error IRQ enable not defined
 #endif
 
