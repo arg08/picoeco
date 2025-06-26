@@ -17,9 +17,19 @@
 #include "bus1mhzproto.pio.h"
 #endif
 
+#include "board_specific.h"
+
+#if EMULATE_6854
+#include "emu6854.h"
+#endif
+
+// Base of registers on 1MHz bus
+#define	ECO_REGS_BASE	0xfc28
+
 // Bank of registers for read purposes, accessed by DMA.
 // Has to be aligned to its own size.
-uint8_t eco_regs[8] __attribute__ ((aligned(8))) = 
+// Values are updated by the emu6854 code.
+uint8_t eco_1mhz_regs[8] __attribute__ ((aligned(8))) = 
 {	0x00,	// SR1
 	0x24,	// SR2 - clk det in bit 5, idle in bit 2
 	0x33,	// RDR
@@ -64,11 +74,19 @@ static void __not_in_flash_func(pio_irq0_handler)(void)
 {
 	PIO pio = BUS1MHZ_PIO;
 
-	// Only using interrupts on SM0
+	// Only using interrupts on SM0 - others require no handling.
 	while (pio->ints0 & (PIO_IRQ0_INTS_SM0_RXNEMPTY_BITS << 0))
 	{
 		uint32_t w = pio->rxf[0];	// SM 0
-		printf("main rx %08lx\n", w);
+
+#if EMULATE_6854
+		if ((w & 0x7f8) == (0x400 | 0x100 | (ECO_REGS_BASE & 0xff)))
+			emu6854_reg_read(w & 7);
+		else if ((w & 0x7f8) == (0x000 | 0x100 | (ECO_REGS_BASE & 0xff)))
+			emu6854_reg_write(w & 7, w >> 24);
+		else
+#endif
+			printf("1MHz access %08lx\n", w);
 	}
 }
 
@@ -187,7 +205,7 @@ printf("Main program at offset %d\n", offset);
 	offset = pio_add_program(pio, &bus1mhz_read8_program);
 
 	// SM1 - econet registers at 0xfc28
-	bus1mhz_read8_program_init(pio, 1, offset, 0xfc28, eco_regs);
+	bus1mhz_read8_program_init(pio, 1, offset, ECO_REGS_BASE, eco_1mhz_regs);
 	setup_dma(1);
 	// XXXX SM2, SM3 for further instances
 
@@ -195,6 +213,14 @@ printf("Main program at offset %d\n", offset);
 	// Hook the interrupt handler for SM0
 	irq_set_exclusive_handler((pio == pio0) ? PIO0_IRQ_0 : PIO1_IRQ_0,
 		pio_irq0_handler);
+
+	// Interrupt priority - set to highest available (zero), bearing in mind
+	// that CortexM0 has only 4 distinct levels distinguished by the two MSBs.
+	// Note that this _must_ match the priority of the Econet IRQs in the
+	// case of emu6854 as it's assumed the two don't preempt each other.
+	// In general, 1MHz bus has tighter timing constraints so more general
+	// Econet support would want to be at a lower priority.
+	irq_set_priority((pio == pio0) ? PIO0_IRQ_0 : PIO1_IRQ_0, 0);
 
 	// We leave the interrupts permanently enabled in the NVIC,
 	// but mask individual sources from time to time.

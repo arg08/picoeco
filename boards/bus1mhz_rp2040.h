@@ -53,8 +53,8 @@
 #define	B1M_PIN_RnW			26
 
 #define	B1M_PIN_1MHZE		11
-#define	B1M_PIN_NMI			12
-#define	B1M_PIN_IRQ			13
+#define	B1M_PIN_BBC_NMI		12
+#define	B1M_PIN_BBC_IRQ		13
 #define	B1M_PIN_BBC_nRST	14
 #define	B1M_PIN_AD_MUX		15	// Read data when low, address when high.
 								// NB. data undriven when muxed away

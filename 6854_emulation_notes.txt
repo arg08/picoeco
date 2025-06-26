@@ -84,14 +84,6 @@ set TDRA as soon as RTS is set, though software might not be expecting
 it that soon (presumably normal behaviour is to exit at that point
 and expect an NMI to load the Tx frame data).
 
-ClrRxStat/ClrTxSt in CR2 - these only clear SR bits that have been read
-as '1' by the host.  So we need to keep a record of reads of SR and
-maintain a 'to be cleared' list of bits (and knock them out of to-be-clr
-when they get set again by conditions on the line).
-NB. SR2 are all Rx-related, SR1 has just FlagDetected as an Rx status,
-CTS/TxU are clearable Tx status - TDRA isn't clearable.
-Clearable Rx are DCD/CTS/RxAbrt/RxIdle.
-
 
 BBC DNFS behaviour
 ------------------
@@ -171,12 +163,21 @@ discarding them.  RxABT is not implemented as our PIO SM can't distinguish
 abort from idle.  FD could be implemented, but it only has effect if
 enabled in CR3 - and the BBC never does.
 
-'sticky' above means they stay set until read even if the underlying
-status goes away,  CTS is sticky in the low direction??
+'sticky' above means they stay set until cleared even if the underlying
+status goes away,  CTS is cleared by CLRTX,  DCD and RxIdle are
+cleared by CLRRX.  In theory, the clear should only clear bits whose
+value has already been read (ie. if the condition arises again between
+reading the SR and writing the clear in CR1, then the bit remains set).
+However, in practice with Econet another CTS edge won't happen unless
+doing a whole new Tx cycle (as we abort Tx on collisions), and if you
+miss an RxIdle because the line has since gone non-idle again then
+it's not actually useful because you've presumably also missed whatever
+data was between the two idles.  Similarly, glitches on DCD can't
+happen in this implementation as we only poll the clock detection
+at about 1Hz.  So for all these bits we just implement the condition
+setting the bit and clears by CLRTx, CLRRx, RxRST, TxRST as applicable.
 
-The SR1/SR2 could be done as a lookup table from the true status,
-but there are 10 bits so a 1K-entry, 16-bit values table and really wants
-to be 13-bit because PSE,RIE, TIE all affect the status.
+
 
 Interface states
 ----------------
