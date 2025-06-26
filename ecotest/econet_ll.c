@@ -782,7 +782,7 @@ static inline void __not_in_flash_func(tx_fifo_int)(PIO pio, EcoWkSpace *ws)
 /*
 	Purpose:	Exclusive handler for IRQ0  on this PIO unit
 	Returns:	Nothing
-	Notes:		Currently assumes pio0, SM0 - should support
+	Notes:		Currently assumes fixed PIO unit and SM0 - should support
 				multiple interfaces each in own state machine, but
 				not easy to do so without adding inefficiency for the
 				usual case of only one interface.
@@ -791,7 +791,7 @@ static inline void __not_in_flash_func(tx_fifo_int)(PIO pio, EcoWkSpace *ws)
 static void __not_in_flash_func(pio_irq0_handler)(void)
 {
 	EcoWkSpace *ws = &workspace0;
-	PIO pio = pio0;
+	PIO pio = ECONET_PIO;
 
 	// RxFIFO interrupt is always enabled.
 	// Values read from the FIFO are one of:
