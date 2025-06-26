@@ -10,6 +10,25 @@ extern bool board_clock_enabled(void);
 extern bool board_terminator_enabled(void);
 extern void board_specific_init(void);
 
+// These are inline functions if simple GPIOs, otherwise just prototype
+// the actual function in board_specific.c
+#if defined(B1M_PIN_BBC_NMI)
+static inline void set_b1m_nmi_active(bool en)
+{
+	gpio_set_dir(B1M_PIN_BBC_NMI, en);
+}
+#else
+static void set_b1m_nmi_active(bool en);
+#endif
+#if defined(B1M_PIN_BBC_IRQ)
+static inline void set_b1m_irq_active(bool en)
+{
+	gpio_set_dir(B1M_PIN_BBC_IRQ, en);
+}
+#else
+static void set_b1m_irq_active(bool en);
+#endif
+
 // Econet hardware setup.  Note that we need the whole of a PIO
 // so can't share with other PIO functions, but can have multiple
 // Econet instances in the same PIO.

@@ -49,6 +49,31 @@ static void set_clk_ena(bool en)
 #endif
 }
 
+#if defined(B1M_PIN_BBC_NMI)
+// This is declared as an inline function in board_specific.h
+// if it's a simple GPIO pin, but a function here otherwise.
+#elif defined(BOARD_CONTROL_BIT_BBC_NMI)
+static void set_b1m_nmi_active(bool en)
+{
+	set_ctrl_bit(BOARD_CTRL_BIT_BBC_NMI, en);
+}
+#else
+#error NMI enable not defined
+#endif
+
+#if defined(B1M_PIN_BBC_IRQ)
+// This is declared as an inline function in board_specific.h
+// if it's a simple GPIO pin, but a function here otherwise.
+#elif defined(BOARD_CONTROL_BIT_BBC_IRQ)
+static void set_b1m_irq_active(bool en)
+{
+	set_ctrl_bit(BOARD_CTRL_BIT_BBC_IRQ, en);
+}
+#else
+#error IRQ enable not defined
+#endif
+
+
 void board_enable_terminator(bool en)
 {
 #if defined(ECONET_PIN_TERM_EN)
