@@ -67,7 +67,7 @@
 ; putting a special low-bits-set word in the RX FIFO when a flag is Rx
 ; and otherwise receiving all bytes; the transition to idle unavoidably
 ; writes a byte of 0xff to the FIFO before the idle is detected.
-; (this spurious FF will then be followed by another flag marker so
+; (this spurious FF will then be followed by another idle marker so
 ; just looks like a runt packet that could happen any time).
 ; Another special marker value is written to the Rx FIFO from the Tx code
 ; when it starts emitting a flag - this is used to sequence events
