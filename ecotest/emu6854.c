@@ -166,8 +166,8 @@ static void __not_in_flash_func(recompute_irq)(Em6854WkSpace *ws)
 
 	// If the INTON/INTOFF latch is off, changes to SR1[IRQ] have no effect
 	// on the actual NMI pin; otherwise reflect it in there
-	if (ws->inton && irq)
-		set_b1m_nmi_active(0);
+	if (ws->inton)
+		set_b1m_nmi_active(irq);
 }
 
 /*
@@ -316,7 +316,7 @@ static inline void
 	{
 		// No space.  This can only be a 2nd write in 2-byte mode.
 		// Stash the byte and wait for the interrupt to pick it up
-		// Addinng an extra bit distinguishes tx_pending empty from a byte of zero
+		// Adding an extra bit distinguishes tx_pending empty from a byte of 00
 		ws->tx_pending = wb | 0x100;
 	}
 	// All CRC accumulation is done here, not in the fifo interrupt.
