@@ -5,6 +5,7 @@
 #include <string.h>
 #include <stdlib.h>
 #include "pico/stdlib.h"
+#include "pico/stdio_rtt.h"
 #include "hardware/clocks.h"
 #include "hardware/structs/pwm.h"
 #include "hardware/pwm.h"
@@ -174,6 +175,7 @@ void board_specific_init()
 		-1);
 #endif
 #endif
+	stdio_rtt_init();
 
 	// XXXX presently to be combined with our own USB handling.
 	stdio_usb_init();

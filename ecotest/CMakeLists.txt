@@ -73,6 +73,7 @@ target_compile_definitions(emu6854 PRIVATE
 
 target_link_libraries(emu6854
         pico_stdlib
+		pico_stdio_rtt
         hardware_pio
         hardware_uart
 		hardware_pwm
@@ -97,6 +98,7 @@ pico_generate_pio_header(emu6854 ${CMAKE_CURRENT_LIST_DIR}/bus1mhz_muxed.pio)
 pico_add_extra_outputs(emu6854)
 pico_enable_stdio_usb(emu6854 1)
 pico_enable_stdio_uart(emu6854 1)
+pico_enable_stdio_rtt(emu6854 1)
 endif()
 
 # Get the UF2 file built
@@ -105,12 +107,14 @@ pico_add_extra_outputs(${MAIN_EXECUTABLE})
 set(PICO_UART_DEFAULT_BAUD 2000000)
 pico_enable_stdio_usb(${MAIN_EXECUTABLE} 1)
 pico_enable_stdio_uart(${MAIN_EXECUTABLE} 1)
+pico_enable_stdio_rtt(${MAIN_EXECUTABLE} 1)
 
 
 # Not all executables need all these libararies, but there's no difference
 # to the executable by including them unconditionally
 target_link_libraries(${MAIN_EXECUTABLE}
         pico_stdlib
+		pico_stdio_rtt
         hardware_pio
         hardware_uart
 		hardware_pwm
