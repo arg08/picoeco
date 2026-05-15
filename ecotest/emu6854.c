@@ -60,8 +60,8 @@
 #define	CR1_BIT_TXRST	(1<<7)	// Reset Tx
 
 #define	CR2_BIT_PSE		(1<<0)	// Prioritized status enable
-#define	CR2_BIT_2BYT	(1<<1)	// Rx interrupt enable
-#define	CR2_BIT_FLAG	(1<<2)	// Tx interrupt enable
+#define	CR2_BIT_2BYT	(1<<1)	// 2 byte (vs 1 byte) TDRA/RDA mode
+#define	CR2_BIT_FLAG	(1<<2)	// Selects flag vs mark idle (we always flag)
 #define	CR2_BIT_FC_TDRA	(1<<3)	// 1 to select FrameComplete in place of TDRA
 #define	CR2_BIT_TXLAST	(1<<4)	// Tx last byte
 #define	CR2_BIT_CLRRX	(1<<5)	// Clear Rx status
@@ -107,9 +107,6 @@ typedef struct
 
 	bool inton;				// Record the inton/intoff toggle
 
-	bool fdisc;				// Discard data until end of frame.
-							// Set by writes to CR1, cleared by Rx flag/idle
-
 	uint8_t cr1;			// Last written CR1 value
 	uint8_t cr2;			// Last written CR2 value
 
@@ -118,6 +115,10 @@ typedef struct
 							// to distinguish empty from zero value byte.
 							// Only one byte used in normal operations,
 							// up to 3 at end of packet for the CRC
+
+	int rx_count;			// Counts bytes in a packet for AddressPresent etc
+							// Set to -1 if skipping after Discontinue
+							// or if Rx disabled.
 
 	uint8_t rx_inptr;		// Indexes to circular buffer for rx data
 	uint8_t rx_outptr;		// Indexes to circular buffer for rx data
@@ -338,11 +339,12 @@ static inline void
 	// the discarding if there's another write to CR1 before end of frame
 	if (wb & CR1_BIT_RXDISC)
 	{
-#warning ws->fdisc should be ws->rx_count == -1
-		ws->fdisc = true;
+		ws->rx_count = -1;				// discontinue the Rx
 		ws->rx_inptr = ws->rx_outptr;	// Flush any buffered data
 		eco_1mhz_regs[REGNO_SR2] &=
-			SR2_BIT_RDA | SR2_BIT_OVRN | SR2_BIT_ERR | SR2_BIT_FV | SR2_BIT_AP;
+			~(SR2_BIT_RDA | SR2_BIT_OVRN | SR2_BIT_ERR |
+			SR2_BIT_FV | SR2_BIT_AP);
+		eco_1mhz_regs[REGNO_SR1] &= ~SR1_BIT_RDA;
 		recompute_irq(ws);
 	}
 	// TIE/RIE may reauire a change to SR1 INT flag and hence the IRQ
@@ -485,6 +487,21 @@ static inline void __not_in_flash_func(event_tf)(PIO pio, Em6854WkSpace *ws)
 static inline
 void __not_in_flash_func(event_d)(PIO pio, Em6854WkSpace *ws, uint32_t w)
 {
+	// Do nothing at all if rx_count is negative indicating that we
+	// are in frame discard mode.  Gets set to zero on opening flag.
+	if (ws->rx_count >= 0)
+	{
+		if (ws->cr1 & CR1_BIT_RXRST)
+		{
+			// Ensure we skip the rest of this frame, don't start picking
+			// up in the middle if the host re-enables Rx.
+			ws->rx_count = -1;
+		}
+		else
+		{
+			
+		}
+	}
 }
 
 /*
@@ -496,10 +513,9 @@ void __not_in_flash_func(event_d)(PIO pio, Em6854WkSpace *ws, uint32_t w)
 
 static inline void __not_in_flash_func(event_i)(PIO pio, Em6854WkSpace *ws)
 {
-	// An idle event has to leave us in ST_IDLE, but varies in the
-	// amount of cleaning up needed.
 //putchar('i');
 
+#warning move this wrap code elsewhere
 	if (0)
 	{
 		// This should shortly cause a TF event and Tx to start
@@ -512,6 +528,65 @@ static inline void __not_in_flash_func(event_i)(PIO pio, Em6854WkSpace *ws)
 		// Normal Rx wrap setting.
 		pio_sm_set_wrap(pio, SM_NO, econet_hdlc_wrap_target, econet_hdlc_wrap);
 	}
+
+	// All SR updates are inhibited if the Rx is in reset
+	if (!(ws->cr1 & CR1_BIT_RXRST))
+	{
+		if (ws->rx_count >= 2)
+		{
+			// Have had enough of an Rx frame that we've made the host
+			// aware of it, so need to declare an abort.
+			// In theory, we should preserve some other SR2
+			// bits if PSE isn't set, but in this implementation we
+			// throw away any unread data, FV/ERR can't be set under this
+			// condition (rx_count would be -1 or 0), AP is meaningless
+			// if we junk the data, OVRN we rarely set anyhow and it's
+			// no longer relevant, and DCD (no clock) can't be true
+			// as we've just clocked in the idle.
+			// So just set ABT, and IDLE if permitted by PSE
+			if (ws->cr2 & CR2_BIT_PSE)
+				eco_1mhz_regs[REGNO_SR2] = SR2_BIT_RxABT;
+			else
+				eco_1mhz_regs[REGNO_SR2] = SR2_BIT_RxABT | SR2_BIT_IDLE;
+
+			eco_1mhz_regs[REGNO_SR1] &= ~SR1_BIT_RDA;
+		}
+		else
+		{
+			// Idle when not actively receiving (after frame that host
+			// did FrameDisconinue, or early in the frame when we haven't
+			// admitted to it yet).
+			// Just set the idle bit, if allowed by PSE
+			if (ws->cr2 & CR2_BIT_PSE)
+			{
+				// Only set IDLE if higher priority bits aren't set;
+				// and if we do set it, clear lower priority bits.
+				if ((eco_1mhz_regs[REGNO_SR2] &
+					(SR2_BIT_ERR | SR2_BIT_FV | SR2_BIT_DCD | SR2_BIT_OVRN
+						| SR2_BIT_RxABT))
+					== 0)
+				{
+					// Only remaining bits in SR2 are AP and RDA which
+					// are lower priority - so simple assignment rather than |=
+					eco_1mhz_regs[REGNO_SR2] = SR2_BIT_IDLE;
+					eco_1mhz_regs[REGNO_SR1] &= ~SR1_BIT_RDA;
+				}
+			}
+			else
+			{
+				// Easy case - no PSE, so just set the IDLE bit
+				eco_1mhz_regs[REGNO_SR2] |= SR2_BIT_IDLE;
+			}
+		}
+		// This quite likely causes an IRQ
+		recompute_irq(ws);
+	}
+
+#warning actually it's worse than that - there's an invisible bit which causes the interrupt, is latching, and can be cleared; the SR2 bit is an OR of the invisible bit with the current live status.
+	// Remember the current state separate from the SR2 value which is latching
+	ws->line_idle = true;
+	// Regardless of status reported to host, Rx is no longer active.
+	ws->rx_count = -1;	
 }
 
 /*
@@ -574,7 +649,7 @@ static void __not_in_flash_func(pio_irq0_handler)(void)
 		{
 			event_i(pio, ws);
 		}
-		else event_d(pio, ws, w); // Normal data byte in high 8 bits
+		else event_d(pio, ws, w >> 24); // Normal data byte in high 8 bits
 	}
 
 	// Handle Tx not empty interrupt

@@ -74,6 +74,59 @@ Not implemented (tricky if they were needed):
 
  - RxAbrt in CR2.  Our PIO code doesn't detect aborts, only idles.
 
+Prioritized status enable
+-------------------------
+(see datasheet 4-169, page 19 in PDF)
+PSE in CR2 provides masking of status bits in SR1/SR2.  The underlying
+status is supposed to remain set (until explicitly cleared), but
+the value viewed in SR1/SR2 has at most one bit set out of each of the
+three priority groups.  This is tiresome to emulate!
+
+However, in our case supporting Econet only we can make some simplifications.
+
+The Tx group (CTS->TxU->TDRA/FC) we don't support at all.  CTS is specified
+to always suppress TDRA, and TxU is uncrecoverable so it doesn't hurt
+to also suppress TDRA in that case (as we will automatically stop transmitting
+in any case).  So in effect PSE is always on for this group.
+
+The SR1 Rx group (FD->S2RQ->RDA) we ignore FD as it only applies if
+enabled via CR3 which we don't support, so this just gives S2RQ->RDA,
+and since RDA also appears in SR2, this is handled as part of SR2 processing.
+Note that S2RQ is set if anything in SR2 is set apart from RDA.
+
+SR2 Rx group has (ERR,FV,DCD,OVRN,RxABT) -> IDLE -> AP -> RDA.
+
+In our implementation with big buffers, OVRN is only set in extreme conditions.
+DCD (no clock) is also an exceptional case - if there really is no clock,
+none of the other conditions can occur, and we are slow to detect it;
+the interrupt is really only needed as an escape from lock-up if the
+clock has gone away with none of the others set.
+ERR/FV/RxABT are strictly mutually exclusive.
+So it's reasonable to regard ERR/FV/RxABT/OVRN/DCD/ as mutually exclusive:
+whichever occurs first will abort further Rx and prevent any of the others
+getting set.
+AP can in theory be set alongside those - if the whole frame is buffered
+but hasn't been read yet, though that can only happen with a real 6854
+with runt frames as all our frames are longer than 2 bytes.  But 
+none of the others can be set when AP first becomes set (so that can be
+unconditional), then when setting one of the others clears it if PSE,
+and if PSE is turned off then it can be reinstated.
+is held separately, so we can suppress it with PSE and 
+
+Test results
+------------
+
+CTS/DCD/RxIDLE are documented as 'sticky' - the read value reflects the
+live state ORed with a shadow copy that's clearable with CLRRX/CLRTX
+The shadow copy is the one that generates IRQ and S2RQ.
+
+Question: does RXRST/TXRST also inhibit the live state, or can the state
+be read in the register even while reset?
+
+Question: does PSE apply to the read value or just the shadow copy?
+(ie. does the live state make the bit appear even with PSE enabled?).
+
+
 Misc notes
 ----------
 
@@ -154,14 +207,16 @@ There are 16 total status bits across SR1/SR2, but of those:
 2 Derivative of other status: IRQ, S2RQ
 
 3 True status (sticky) CTS,  DCD, RxIdle
-6 True status (non-lsticky) TDRA, RDA, AP, FV, TxU, ERR
+6 True status (non-sticky) TDRA, RDA, AP, FV, TxU, ERR
 4 Static/not implemented: LOOP, RxOv, RxABT, FD
 1 Duplicated: RDA appears in both SR1 and SR2
 
 RxOv does not need to be implemented as we buffer extra bytes rather than
-discarding them.  RxABT is not implemented as our PIO SM can't distinguish
-abort from idle.  FD could be implemented, but it only has effect if
-enabled in CR3 - and the BBC never does.
+discarding them.  RxABT is not properly implemented as our PIO SM can't
+distinguish abort from idle, but can be declared if we get an idle
+while expecting the end-of-frame flag.
+FD could be implemented, but it only has effect if enabled in CR3
+- and the BBC never does.
 
 'sticky' above means they stay set until cleared even if the underlying
 status goes away,  CTS is cleared by CLRTX,  DCD and RxIdle are
@@ -177,6 +232,19 @@ happen in this implementation as we only poll the clock detection
 at about 1Hz.  So for all these bits we just implement the condition
 setting the bit and clears by CLRTx, CLRRx, RxRST, TxRST as applicable.
 
+It's reasonable to regard ERR/FV/RxABT/OVRN/DCD/ as mutually exclusive:
+whichever occurs first will abort further Rx and prevent any of the others
+getting set.
+Can also include TxU/CTS in there as can't be doing Tx and Rx at same time.
+So 3 bits for all those.
+RDA,TDRA maybe combinable but say 2 for now.
+AP
+IDLE  (latched version affects IRA, does PSE override real?)
+FD (if supported)
+FC (separate from TDRA for this purpose)
+FC/TDRA control from CR2
+
+TxRST RxRST not in status word, just force it and prevent updates.
 
 
 Interface states
